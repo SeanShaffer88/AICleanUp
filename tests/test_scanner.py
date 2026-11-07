@@ -3,11 +3,76 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import aicleanup
 
 
 class ScannerTests(unittest.TestCase):
+    def test_windows_target_registry_covers_msix_and_user_data_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "profile"
+            roaming = home / "AppData/Roaming"
+            local = home / "AppData/Local"
+            expected = [
+                local / "Packages/OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0/LocalCache/Roaming/ChatGPT",
+                local / "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude",
+                local / "Perplexity/Comet/User Data",
+                local / "Microsoft/Copilot/User Data",
+                roaming / "Microsoft/Windows/INetCache/Copilot",
+                roaming / "gemini-desktop",
+                roaming / "@deepseek-ai/dsh-desktop",
+                roaming / "anythingllm-desktop/storage",
+                roaming / "CherryStudio",
+                roaming / "Jan/data",
+            ]
+            for directory in expected:
+                directory.mkdir(parents=True)
+            with patch("aicleanup.platform.system", return_value="Windows"), \
+                    patch.object(Path, "home", return_value=home), \
+                    patch.dict(os.environ, {"APPDATA": str(roaming), "LOCALAPPDATA": str(local)}):
+                targets = aicleanup.known_targets()
+            registered = {item["path"].resolve(): item for item in targets}
+            self.assertTrue(set(p.resolve() for p in expected).issubset(registered))
+            copilot_cache = registered[(roaming / "Microsoft/Windows/INetCache/Copilot").resolve()]
+            self.assertEqual(copilot_cache["category"], "Caches")
+
+    def test_macos_registry_covers_app_support_and_sandboxed_chatgpt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            expected = [
+                home / "Library/Application Support/ChatGPT",
+                home / "Library/Application Support/Perplexity",
+                home / "Library/Application Support/gemini-desktop",
+                home / "Library/Application Support/DeepSeek",
+                home / "Library/Containers/com.openai.chat/Data/Library/Application Support/ChatGPT",
+            ]
+            for directory in expected:
+                directory.mkdir(parents=True)
+            with patch("aicleanup.platform.system", return_value="Darwin"), \
+                    patch.object(Path, "home", return_value=home):
+                targets = aicleanup.known_targets()
+            registered = {item["path"].resolve() for item in targets}
+            self.assertTrue(set(p.resolve() for p in expected).issubset(registered))
+
+    def test_localcache_ancestor_does_not_mark_all_client_data_as_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "LocalCache" / "Roaming" / "ChatGPT"
+            (root / "IndexedDB").mkdir(parents=True)
+            data_file = root / "IndexedDB" / "chat.log"
+            data_file.write_text("chat", encoding="utf-8")
+            cache_root = root / "Cache"
+            cache_root.mkdir()
+            cache_file = cache_root / "cache.bin"
+            cache_file.write_bytes(b"cache")
+
+            items, _ = aicleanup.scan([{"label": "ChatGPT Store", "category": "Application data", "path": root}])
+            by_name = {item["name"]: item for item in items}
+            self.assertEqual(by_name["chat.log"]["category"], "Application data")
+            self.assertFalse(by_name["chat.log"]["selected"])
+            self.assertEqual(by_name["cache.bin"]["category"], "Caches")
+            self.assertTrue(by_name["cache.bin"]["selected"])
+
     def test_workspace_only_returns_scratch_and_backup_artifacts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -22,32 +22,70 @@ WEB_DIR = APP_DIR / "web"
 MAX_FILES = 150_000
 MAX_REQUEST_BYTES = 1_048_576
 MODEL_PATTERNS = ("*.gguf", "*.safetensors", "*.safetensor", "*.ckpt", "*.pth", "*.pt", "*.bin")
+CACHE_DIR_NAMES = {".cache", "cache", "caches", "code cache", "codecache", "gpu cache", "gpucache", "shader cache", "shadercache", "http cache", "httpcache", "inetcache", "webcache", "application cache"}
 SENSITIVE_NAMES = {".env", ".env.local", "credentials", "credentials.json", "token", "tokens", "auth.json", "secrets.json", "id_rsa", "id_ed25519"}
 
 
 def known_targets():
+    """Return existing per-user data roots; application install binaries are deliberately excluded."""
     home = Path.home()
     system = platform.system()
     targets = []
+
     def add(label, category, path, models=False):
         p = Path(path).expanduser()
         if p.exists() and p.is_dir():
             targets.append({"label": label, "category": category, "path": p, "models": models})
+
     if system == "Windows":
         roaming = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
         local = Path(os.environ.get("LOCALAPPDATA", home / "AppData/Local"))
+        packages = local / "Packages"
+        # ChatGPT standalone and Store/MSIX data. Scan the user-data subtree,
+        # not the package's binaries or install directory.
         add("ChatGPT", "Application data", roaming / "ChatGPT")
+        add("ChatGPT (OpenAI)", "Application data", roaming / "OpenAI/ChatGPT")
+        add("ChatGPT (Store)", "Application data", packages / "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0/LocalCache/Roaming/ChatGPT")
         add("Claude", "Application data", roaming / "Claude")
+        add("Claude (Store)", "Application data", packages / "Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude")
+        add("Claude 3P", "Application data", local / "Claude-3p")
         add("Replit", "Application data", roaming / "Replit")
         add("OpenAI / Codex", "Developer tools", local / "OpenAI/Codex")
+        add("Perplexity AI", "Application data", roaming / "Perplexity AI")
+        add("Comet", "Application data", local / "Perplexity/Comet/User Data")
+        add("Microsoft Copilot", "Application data", local / "Microsoft/Copilot/User Data")
+        add("Copilot cache", "Caches", roaming / "Microsoft/Windows/INetCache/Copilot")
+        add("Gemini Desktop", "Application data", roaming / "gemini-desktop")
+        add("DeepSeek Desktop", "Application data", roaming / "Deepseek-Harness-Desktop")
+        add("DeepSeek Desktop", "Application data", roaming / "@deepseek-ai/dsh-desktop")
+        add("DeepSeek user data", "Application data", home / ".dsh")
+        add("Grok Desktop", "Application data", roaming / "grok-desktop")
+        add("Grok user data", "Application data", home / ".grok-desktop")
+        add("AnythingLLM", "Application data", roaming / "anythingllm-desktop/storage")
+        add("Cherry Studio", "Application data", roaming / "CherryStudio")
+        add("Jan", "Application data", roaming / "Jan/data")
     elif system == "Darwin":
         app_support = home / "Library/Application Support"
         caches = home / "Library/Caches"
         add("ChatGPT", "Application data", app_support / "ChatGPT")
         add("Claude", "Application data", app_support / "Claude")
         add("Replit", "Application data", app_support / "Replit")
-        for name, p in (("ChatGPT cache", caches / "com.openai.chat"), ("Claude cache", caches / "com.anthropic.claudefordesktop")):
-            add(name, "Caches", p)
+        add("Perplexity", "Application data", app_support / "Perplexity")
+        add("Comet", "Application data", app_support / "Comet")
+        add("Microsoft Copilot", "Application data", app_support / "Microsoft/Copilot")
+        add("Gemini Desktop", "Application data", app_support / "gemini-desktop")
+        add("DeepSeek", "Application data", app_support / "DeepSeek")
+        add("DeepSeek user data", "Application data", home / ".dsh")
+        add("Grok user data", "Application data", home / ".grok-desktop")
+        add("AnythingLLM", "Application data", app_support / "anythingllm-desktop/storage")
+        add("Cherry Studio", "Application data", app_support / "CherryStudio")
+        add("Jan", "Application data", app_support / "Jan/data")
+        # App Store ChatGPT container IDs can differ across releases/installers.
+        for container_data in home.glob("Library/Containers/*/Data/Library/Application Support/ChatGPT"):
+            add("ChatGPT (sandboxed)", "Application data", container_data)
+        for name, path in (("ChatGPT cache", caches / "com.openai.chat"),
+                           ("Claude cache", caches / "com.anthropic.claudefordesktop")):
+            add(name, "Caches", path)
     else:
         config = home / ".config"
         cache = home / ".cache"
@@ -67,7 +105,8 @@ def known_targets():
     for item in targets:
         key = str(item["path"].resolve())
         if key not in seen:
-            seen.add(key); unique.append(item)
+            seen.add(key)
+            unique.append(item)
     return unique
 
 
@@ -96,7 +135,7 @@ def ignored(path: Path, patterns, root: Path):
 
 
 def category_for(path: Path, target_category: str, workspace=False):
-    directory_parts = [part.lower() for part in path.parts[:-1]]
+    directory_parts = [part.casefold().replace("_", " ").strip() for part in path.parts[:-1]]
     if workspace:
         if any(x in path.parts for x in (".ai_scratch", "tmp_gen")):
             return "Superseded outputs"
@@ -104,7 +143,7 @@ def category_for(path: Path, target_category: str, workspace=False):
             return "Superseded outputs"
         return "Project files"
     if target_category == "Model weights": return "Model weights"
-    if target_category == "Caches" or any(x in part for part in directory_parts for x in ("cache", "code cache", "gpu cache", "httpcache", "shadercache")):
+    if target_category == "Caches" or any(part in CACHE_DIR_NAMES for part in directory_parts):
         return "Caches"
     if target_category == "Developer tools": return "Developer tools"
     return target_category
