@@ -146,6 +146,7 @@ The release artifacts come from three files, all checked in:
 - `packaging/aicleanup.spec` — one PyInstaller executable per platform, with `web/`, `LICENSE`, and the readme bundled inside the binary.
 - `packaging/aicleanup.iss` — the Inno Setup script behind the Windows installer (per-user install, Start Menu entry, uninstaller).
 - `packaging/make_archive.py` — writes the portable zip with fixed timestamps and preserved executable bits, so the same input always produces the same archive.
+- `packaging/make_icon.py` — regenerates `packaging/aicleanup.png`, `packaging/aicleanup.ico` (16–256 px), and the web favicons from the artwork in `packaging/aicleanup-icon.png`, replacing the flat light backdrop with transparency. The same artwork is the Windows executable icon, the installer icon, the browser-tab icon, and the mark in the title bar.
 
 To build locally on the machine you are on:
 

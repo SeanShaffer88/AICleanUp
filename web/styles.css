@@ -158,3 +158,4 @@ table tbody tr[hidden]{display:none}
 #mapScope{width:auto;min-width:120px;height:26px;margin-right:2px;font-size:10px;padding:0 4px}
 .app-version{color:#8f97a1;font:9.5px var(--mono);letter-spacing:.4px;padding:2px 7px;border:1px solid #34373d;border-radius:9px;background:#191b1f}
 .app-version[hidden]{display:none}
+.brand-mark{width:20px;height:20px;border-radius:5px;object-fit:contain;transform:none;display:block}
