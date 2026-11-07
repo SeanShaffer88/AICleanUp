@@ -4,9 +4,10 @@ A local-first disk analyzer for finding caches and temporary artifacts left by A
 
 ## Launch the GUI
 
-Requires Python 3.9 or newer. From this folder:
+Requires Python 3.9 or newer. Install the runtime safety/trash helpers, then launch from this folder:
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 aicleanup.py --gui
 ```
 
@@ -31,6 +32,16 @@ For a trusted reverse-proxy preview only, bind all interfaces explicitly with `-
 The scanner derives Windows roaming/local roots from `%APPDATA%` and `%LOCALAPPDATA%`, including ChatGPT and Claude Store/MSIX user-data subtrees, Copilot data and its `INetCache` folder, Comet, Gemini Desktop, DeepSeek, Grok, AnythingLLM, Cherry Studio, and Jan. On macOS it checks the corresponding `~/Library/Application Support` folders and discovers ChatGPT sandbox data under `~/Library/Containers/*/Data/Library/Application Support/ChatGPT`. Existing ChatGPT, Claude, Replit, Codex, and local-model paths remain supported.
 
 Installer binaries and `Program Files`/`AnthropicClaude/app-*` directories are intentionally not scanned. The name `LocalCache` by itself does not make a folder eligible for cleanup; only recognized cache subdirectories are categorized and preselected as caches. App data such as IndexedDB remains unselected for review.
+
+## Local model runtimes and risk rules
+
+The scanner treats model weights as a different data layer from client caches. It checks Ollama (`OLLAMA_MODELS` or `.ollama/models` and the Linux system store), LM Studio (`LMSTUDIO_HOME`, `.lmstudio-home-pointer`, `.lmstudio/models`, and legacy LM Studio cache), GPT4All, llama.cpp, Hugging Face/Transformers cache overrides, LocalAI (`LOCALAI_MODELS_PATH`), Jan, and the current install folder's text-generation-webui/LocalAI `models` directories.
+
+- Model weights are opt-in for viewing, marked **re-download risk**, and never eligible for raw file-to-Trash cleanup. LM Studio models should be removed in **My Models**; Hugging Face cache repos should use `hf cache rm` or a reviewed `hf cache prune --dry-run`.
+- **Find duplicates** hashes model files with SHA-256 and reports only byte-identical copies. Similar filenames are not treated as duplicates; no hardlinks are created automatically.
+- Ollama model tags are read from manifests and removed only through `ollama rm <model:tag>`, preserving shared content-addressed blobs. A model reported by `ollama ps` cannot be removed.
+- Only Ollama `blobs/*-partial` and `*-partial-<index>` files are considered file-level partial-download candidates. They are never preselected, must be older than seven days, and the Ollama runtime must be stopped.
+- Config/credential filenames are protected. Other cleanup candidates younger than seven days, open in another process, or associated with a running AI client/runtime are blocked. Process and open-handle checks use `psutil`; if checks are unavailable, destructive file actions fail closed.
 
 ## Cleanup safety
 

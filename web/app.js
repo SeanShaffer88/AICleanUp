@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const state = { items: [], locations: 0, category: 'all', query: '', sort: 'size', descending: true, busy: false };
-const colors = { 'Caches':'#3c78a9', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
+const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function bytes(n) { if (n < 1024) return `${n} B`; const units=['KB','MB','GB','TB']; let i=-1; do { n/=1024; i++; } while(n>=1024 && i<units.length-1); return `${n.toFixed(1)} ${units[i]}`; }
 function dateText(s) { try { const d=new Date(s); return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'2-digit'}); } catch { return s; } }
@@ -11,9 +11,14 @@ function render() {
   $('#recoverable').innerHTML=all.length?`${(selectedBytes/1073741824).toFixed(selectedBytes/1073741824<10?2:1)} <small>GB</small>`:'— <small>GB</small>';
   $('#summaryNote').textContent=all.length?`${bytes(selectedBytes)} currently selected for cleanup`:'Scan to discover reclaimable space';
   $('#fileCount').textContent=all.length.toLocaleString();
+  $('#duplicatesBtn').disabled=state.busy||!all.some(x=>x.model&&x.cleanup_action==='none');
   $('#locationCount').textContent=all.length||state.locations?state.locations.toString():'—';
   $('#selectedCount').textContent=selected.length;
-  $('#cleanBtn').disabled=!selected.length||state.busy;
+  const actions=new Set(selected.map(x=>x.cleanup_action));
+  const action=actions.size===1?[...actions][0]:null;
+  $('#cleanBtn span').textContent=action==='ollama-rm'?'Remove with Ollama':actions.size>1?'Choose one action':'Move to Trash';
+  $('#cleanBtn').classList.toggle('ollama-action',action==='ollama-rm');
+  $('#cleanBtn').disabled=!selected.length||!action||state.busy;
   $('#filterBadge').textContent=state.category==='all'?'ALL':state.category.toUpperCase();
   $('#resultSubtitle').textContent=all.length?`${shown.length.toLocaleString()} of ${all.length.toLocaleString()} candidate files · largest first`:'Largest items appear first';
   const cats={}; all.forEach(x=>cats[x.category]=(cats[x.category]||0)+x.size);
@@ -29,13 +34,15 @@ function render() {
     $('#shownCount').textContent='0 items';
     const empty=$('#emptyScan'); if(empty) empty.addEventListener('click',runScan);
   } else {
-    $('#fileRows').innerHTML=sorted.map(x=>`<tr class="file-row ${x.selected?'selected':''}" data-id="${esc(x.id)}"><td><input class="file-check" type="checkbox" aria-label="Select ${esc(x.name)}" ${x.selected?'checked':''}></td><td><div class="file-name-cell"><span class="file-icon">▧</span><div style="min-width:0"><div class="file-name" title="${esc(x.path)}">${esc(x.name)}</div><div class="file-path" title="${esc(x.path)}">${esc(x.path)}</div></div></div></td><td class="size-cell">${bytes(x.size)}</td><td class="modified-cell">${dateText(x.modified)}</td><td><span class="category-pill ${x.category==='Superseded outputs'?'outputs':x.category==='Model weights'?'model':x.category==='Developer tools'?'developer':''}" title="${esc(x.category)}">${esc(x.category)}</span></td></tr>`).join('');
+    $('#fileRows').innerHTML=sorted.map(x=>`<tr class="file-row ${x.selected?'selected':''}" data-id="${esc(x.id)}"><td><input class="file-check" type="checkbox" aria-label="Select ${esc(x.name)}" ${x.selected?'checked':''} ${x.can_delete?'':'disabled'} title="${esc(x.blocked_reason||x.guidance||'')}" ></td><td><div class="file-name-cell"><span class="file-icon">▧</span><div style="min-width:0"><div class="file-name" title="${esc(x.path)}">${esc(x.name)}</div><div class="file-path" title="${esc(x.guidance||x.path)}">${esc(x.path)}</div></div></div></td><td class="size-cell" title="${x.logical_size!==undefined?`Potentially reclaimable ${bytes(x.size)}; logical model size ${bytes(x.logical_size)}`:''}">${bytes(x.size)}</td><td class="modified-cell">${dateText(x.modified)}</td><td><span class="category-pill ${x.category==='Superseded outputs'?'outputs':x.category==='Model weights'?'model':x.category==='Ollama partial downloads'?'partial':x.category==='Developer tools'?'developer':''}" title="${esc(x.category)}">${esc(x.category)}</span><span class="risk-chip ${esc(x.risk||'inspect')}" title="${esc(x.blocked_reason||x.guidance||x.risk||'')}" >${esc((x.risk||'inspect').toUpperCase())}</span></td></tr>`).join('');
     $('#shownCount').textContent=`${shown.length.toLocaleString()} item${shown.length===1?'':'s'}${state.query?' matching':''}`;
     document.querySelectorAll('.file-row').forEach(row=>row.querySelector('.file-check').addEventListener('change',e=>{const x=state.items.find(i=>i.id===row.dataset.id); if(x)x.selected=e.target.checked;render();}));
   }
-  const visibleIds=shown.map(x=>x.id), visibleSelected=shown.filter(x=>x.selected).length;
-  $('#selectVisible').checked=visibleIds.length>0&&visibleSelected===visibleIds.length;
-  $('#selectVisible').indeterminate=visibleSelected>0&&visibleSelected<visibleIds.length;
+  const activeAction=selected.find(x=>x.cleanup_action)?.cleanup_action;
+  const selectable=shown.filter(x=>x.can_delete&&(!activeAction||x.cleanup_action===activeAction)), visibleSelected=selectable.filter(x=>x.selected).length;
+  $('#selectVisible').disabled=selectable.length===0;
+  $('#selectVisible').checked=selectable.length>0&&visibleSelected===selectable.length;
+  $('#selectVisible').indeterminate=visibleSelected>0&&visibleSelected<selectable.length;
   renderMap(catList, total);
 }
 function renderTree(cats) {
@@ -50,10 +57,10 @@ function renderMap(catList,total) {
   if(!eligible.length){$('#treemap').innerHTML='<div class="map-empty">Run a scan to visualize space usage</div>';return;}
   // Area is proportional to file size, while a modest minimum keeps tiny files discoverable.
   const adjusted=eligible.map(x=>Math.max(Math.sqrt(x.size),12)), sum=adjusted.reduce((a,b)=>a+b,0);
-  $('#treemap').innerHTML=eligible.map((x,i)=>`<button class="map-block" title="${esc(x.path)} — ${bytes(x.size)}" data-category="${esc(x.category)}" style="flex:${adjusted[i]/sum*100} 1 0;background:${colors[x.category]||'#527fad'}"><span>${esc(x.name)}</span><small>${bytes(x.size)}</small></button>`).join('');
+  $('#treemap').innerHTML=eligible.map((x,i)=>`<button class="map-block" title="${esc(x.path)} — ${bytes(x.size)}${x.logical_size!==undefined?` reclaimable estimate / ${bytes(x.logical_size)} logical` : ''}" data-category="${esc(x.category)}" style="flex:${adjusted[i]/sum*100} 1 0;background:${colors[x.category]||'#527fad'}"><span>${esc(x.name)}</span><small>${bytes(x.size)}</small></button>`).join('');
   document.querySelectorAll('.map-block').forEach(b=>b.addEventListener('click',()=>{state.category=b.dataset.category;render();}));
 }
-function setBusy(on, text) { state.busy=on; $('#scanBtn').disabled=on; $('#refreshBtn').disabled=on; $('#progress').classList.toggle('running',on); $('#statusText').textContent=text|| (on?'Scanning…':'Ready'); $('.status-light').classList.toggle('working',on); }
+function setBusy(on, text) { state.busy=on; $('#scanBtn').disabled=on; $('#refreshBtn').disabled=on; $('#duplicatesBtn').disabled=on||!state.items.some(x=>x.model&&x.cleanup_action==='none'); $('#progress').classList.toggle('running',on); $('#statusText').textContent=text|| (on?'Scanning…':'Ready'); $('.status-light').classList.toggle('working',on); }
 async function runScan() {
   if(state.busy)return;
   setBusy(true,'Scanning locations…'); $('#warningLine').hidden=true;
@@ -67,25 +74,53 @@ async function runScan() {
   } catch(err) { $('#statusText').textContent='Scan failed'; toast(err.message); }
   finally { setBusy(false, $('#statusText').textContent); }
 }
+async function findDuplicates() {
+  if(state.busy)return;
+  setBusy(true,'Hashing model files…');
+  try {
+    const response=await fetch('/api/duplicates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const data=await response.json();if(!response.ok)throw new Error(data.error||'Duplicate scan failed');
+    const groups=data.groups||[];
+    if(!groups.length){$('#warningLine').textContent='No byte-identical model files found. Similar names are never treated as duplicates.';$('#warningLine').hidden=false;toast('No exact duplicates found');}
+    else {
+      const savings=groups.reduce((sum,g)=>sum+g.size*Math.max(0,g.items.length-1),0);
+      const detail=groups.slice(0,4).map(g=>`${bytes(g.size)} each · ${g.items.slice(0,3).map(i=>i.path).join('  ↔  ')}${g.items.length>3?`  (+${g.items.length-3} more)`:''}`).join('   |   ');
+      $('#warningLine').textContent=`${groups.length} exact SHA-256 duplicate group${groups.length===1?'':'s'} · about ${bytes(savings)} duplicated bytes. Review only; no files were changed. ${detail}${groups.length>4?'  |  More groups omitted.':''}`;
+      $('#warningLine').hidden=false;toast(`Found ${groups.length} exact duplicate groups; nothing was changed`);
+    }
+    $('#statusText').textContent=`Duplicate check complete · ${groups.length} exact groups`;
+  }catch(err){toast(err.message);$('#statusText').textContent='Duplicate check failed';}
+  finally{setBusy(false,$('#statusText').textContent);}
+}
+
 async function moveToTrash() {
   const selected=selectedItems(); if(!selected.length)return;
-  $('#confirmText').textContent=`${selected.length.toLocaleString()} item${selected.length===1?'':'s'} (${bytes(selected.reduce((n,x)=>n+x.size,0))}) will be moved to your operating system’s Trash. You can restore them later.`;
+  const actions=new Set(selected.map(x=>x.cleanup_action)); if(actions.size!==1)return;
+  const ollama=actions.has('ollama-rm');
+  const bytesTotal=selected.reduce((n,x)=>n+x.size,0);
+  const logicalTotal=selected.reduce((n,x)=>n+(x.logical_size||x.size),0);
+  $('#confirmDialog h2').textContent=ollama?'Remove selected models with Ollama?':'Move selected items to Trash?';
+  $('#confirmDialog .dialog-trash').textContent=ollama?'Run ollama rm':'Move to Trash';
+  $('#confirmText').textContent=ollama
+    ?`The Ollama CLI will remove ${selected.length} selected model tag${selected.length===1?'':'s'} (${bytes(logicalTotal)} logical size). Estimated space freed: ${bytes(bytesTotal)}; shared blobs remain. Loaded models are blocked.`
+    :`${selected.length.toLocaleString()} item${selected.length===1?'':'s'} (${bytes(bytesTotal)}) will be moved to your system Trash. Cleanup is blocked for recent files, open handles, and running related clients.`;
   const dialog=$('#confirmDialog');
   if(await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='confirm'),{once:true});dialog.showModal();})!==true)return;
-  setBusy(true,'Moving files to Trash…');
+  setBusy(true,ollama?'Removing through Ollama…':'Moving files to Trash…');
   try {
-    const response=await fetch('/api/trash',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:selected.map(x=>x.id)})});
-    const data=await response.json();if(!response.ok)throw new Error(data.error||'Unable to move files');
+    const endpoint=ollama?'/api/ollama-remove':'/api/trash';
+    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:selected.map(x=>x.id)})});
+    const data=await response.json();if(!response.ok)throw new Error(data.error||'Cleanup failed');
     const moved=new Set((data.moved||[]).map(x=>x.path)); state.items=state.items.filter(x=>!moved.has(x.path));
     render();
-    if(data.errors?.length){const detail=`${data.errors[0].path}: ${data.errors[0].error}`;toast(`${data.moved.length} moved · ${data.errors.length} skipped · ${data.errors[0].error}`);$('#statusText').textContent=`${data.moved.length} moved · ${data.errors.length} skipped`;$('#statusText').title=detail;}
-    else {toast(`${data.moved.length} item${data.moved.length===1?'':'s'} moved to Trash · audit log saved`);$('#statusText').textContent=`Cleanup complete · audit saved to ${data.audit}`;$('#statusText').title=data.audit||'';}
+    if(data.errors?.length){const detail=`${data.errors[0].path}: ${data.errors[0].error}`;toast(`${data.moved.length} completed · ${data.errors.length} blocked · ${data.errors[0].error}`);$('#statusText').textContent=`${data.moved.length} completed · ${data.errors.length} blocked`;$('#statusText').title=detail;}
+    else {toast(ollama?`${data.moved.length} model tag${data.moved.length===1?'':'s'} removed by Ollama · audit saved`:`${data.moved.length} item${data.moved.length===1?'':'s'} moved to Trash · audit saved`);$('#statusText').textContent=`Cleanup complete · audit saved to ${data.audit}`;$('#statusText').title=data.audit||'';}
   }catch(err){toast(err.message);$('#statusText').textContent='Cleanup failed';}
   finally{setBusy(false,$('#statusText').textContent);}
 }
 let toastTimer;function toast(text){const el=$('#toast');el.textContent=text;el.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('visible'),3500);}
-$('#scanBtn').addEventListener('click',runScan);$('#refreshBtn').addEventListener('click',runScan);$('#cleanBtn').addEventListener('click',moveToTrash);$('#search').addEventListener('input',e=>{state.query=e.target.value;render();});
-$('#selectVisible').addEventListener('change',e=>{filtered().forEach(x=>x.selected=e.target.checked);render();});
+$('#scanBtn').addEventListener('click',runScan);$('#refreshBtn').addEventListener('click',runScan);$('#cleanBtn').addEventListener('click',moveToTrash);$('#duplicatesBtn').addEventListener('click',findDuplicates);$('#search').addEventListener('input',e=>{state.query=e.target.value;render();});
+$('#selectVisible').addEventListener('change',e=>{const action=selectedItems().find(x=>x.cleanup_action)?.cleanup_action;filtered().filter(x=>x.can_delete&&(!action||x.cleanup_action===action)).forEach(x=>x.selected=e.target.checked);render();});
 $('#sortSize').addEventListener('click',()=>{state.sort='size';state.descending=!state.descending;render();});
 $('#sortName').addEventListener('click',()=>{state.sort='name';state.descending=!state.descending;render();});
 $('#clearPath').addEventListener('click',()=>$('#workspace').value='');
