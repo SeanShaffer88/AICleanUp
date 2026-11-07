@@ -1517,6 +1517,17 @@ $('#scopeSelect').addEventListener('change', e => applyScope(e.target.value));
 $('#scopeConfirm').addEventListener('click', commitScope);
 $('#selectEligible').addEventListener('click', () => bulkEligible());
 $('#mapScope').addEventListener('change', e => { state.mapScope = e.target.value === 'scan' ? 'scan' : 'view'; });
+
+fetch('/api/meta')
+  .then((response) => (response.ok ? response.json() : null))
+  .then((meta) => {
+    if (!meta || !meta.version) return;
+    const badge = $('#appVersion');
+    badge.textContent = `v${meta.version}`;
+    badge.title = `AICleanUp ${meta.version}${meta.frozen ? ' (packaged build)' : ''} — Python ${meta.python} on ${meta.platform}`;
+    badge.hidden = false;
+  })
+  .catch(() => {});
 $('#exportMapPng').addEventListener('click', exportMapPng);
 $('#emptyDirsBtn').addEventListener('click', findEmptyDirs);
 $('#emptyConfirm').addEventListener('click', sweepEmptyDirs);

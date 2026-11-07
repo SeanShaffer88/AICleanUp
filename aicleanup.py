@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -24,6 +25,10 @@ from runtime_support import (
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
 
+__version__ = "1.0.0"
+
+# PyInstaller repoints __file__ at the unpacked bundle, so the bundled web/
+# folder is found the same way whether the app runs from source or an installer.
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "web"
 MAX_FILES = 150_000
@@ -892,6 +897,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/targets":
             targets = [{"label": x["label"], "category": x["category"], "path": str(x["path"]), "models": x.get("models", False)} for x in known_targets()]
             return self.send_json({"targets": targets})
+        if parsed.path == "/api/meta":
+            return self.send_json({"version": __version__, "platform": platform.system(),
+                                   "python": platform.python_version(), "frozen": bool(getattr(sys, "frozen", False))})
         if parsed.path == "/api/state":
             return self.send_json({"items": list(state.findings.values()), "warnings": []})
         if parsed.path == "/api/duplicates/progress":
@@ -1110,7 +1118,12 @@ def main():
     parser.add_argument("--gui", action="store_true", help="Launch the local browser interface.")
     parser.add_argument("--port", type=int, default=8765, help="GUI port (default: 8765).")
     parser.add_argument("--host", default="127.0.0.1", help="GUI bind address (default: 127.0.0.1; use 0.0.0.0 only behind a trusted proxy).")
+    parser.add_argument("--version", action="version", version=f"AICleanUp {__version__}")
     args = parser.parse_args()
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+        # A packaged copy opened from Explorer or the Start Menu should show the
+        # window, not print a scan summary into a console that closes at once.
+        args.gui = True
     if args.hf_prune_preview:
         try:
             preview = huggingface_prune_preview()

@@ -196,6 +196,13 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(entry["path"], str(source))
             self.assertEqual(entry["destination"], str(moved_to))
 
+    def test_meta_endpoint_reports_the_release_version(self):
+        with urllib.request.urlopen(self.url + "/api/meta", timeout=5) as response:
+            data = json.load(response)
+        self.assertEqual(data["version"], aicleanup.__version__)
+        self.assertTrue(data["platform"])
+        self.assertFalse(data["frozen"])
+
     def test_runtimes_endpoint_summarizes_model_stores(self):
         findings = {
             "a": {"id": "a", "runtime": "ollama", "model": True, "size": 512, "root": "/m/ollama", "path": "/m/ollama/manifests/x"},
