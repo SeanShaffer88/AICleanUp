@@ -317,3 +317,35 @@ def remove_ollama_model(model_ref):
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "Ollama returned an error").strip()[:400])
     return (result.stdout or f"Removed {model_ref}").strip()
+
+def huggingface_cli():
+    """Locate the Hugging Face CLI without assuming a single binary name."""
+    for name in ("hf", "huggingface-cli"):
+        executable = shutil.which(name)
+        if executable:
+            return executable
+    return None
+
+
+def huggingface_prune_preview(timeout=45):
+    """Run Hugging Face's own read-only prune preview.
+
+    AICleanUp never issues a pruning command that changes files, and never
+    touches the Hugging Face cache as raw files: the CLI stays authoritative.
+    """
+    executable = huggingface_cli()
+    if not executable:
+        raise RuntimeError("The Hugging Face CLI is not installed; install `huggingface_hub[cli]` to preview cache pruning.")
+    command = [executable, "cache", "prune", "--dry-run"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("The Hugging Face prune preview timed out; run it from a terminal instead.") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not run the Hugging Face CLI: {exc}") from exc
+    output = (result.stdout or "").strip()
+    error = (result.stderr or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError((error or output or "The Hugging Face CLI returned an error.")[:800])
+    return {"command": " ".join(command), "output": output or "No unused revisions reported.",
+            "warnings": error, "dry_run": True}

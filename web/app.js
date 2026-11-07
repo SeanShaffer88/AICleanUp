@@ -17,6 +17,7 @@ function render() {
   $('#summaryNote').textContent=all.length?`${bytes(selectedBytes)} currently selected for cleanup`:'Scan to discover reclaimable space';
   $('#fileCount').textContent=all.length.toLocaleString();
   $('#duplicatesBtn').disabled=state.busy||!all.some(x=>x.model&&x.cleanup_action==='none');
+  $('#hfPreviewBtn').disabled=state.busy||!all.some(x=>x.runtime==='huggingface');
   const restorable=state.audits.reduce((n,a)=>n+(a.restorable||0),0);
   $('#restoreBtn').disabled=state.busy||restorable===0;
   $('#restoreBtn').title=restorable?`Restore ${restorable} file${restorable===1?'':'s'} from the last cleanup manifest`:'No restorable cleanup manifest yet';
@@ -68,7 +69,7 @@ function renderMap(catList,total) {
   $('#treemap').innerHTML=eligible.map((x,i)=>`<button class="map-block" title="${esc(x.path)} — ${bytes(x.size)}${x.logical_size!==undefined?` reclaimable estimate / ${bytes(x.logical_size)} logical` : ''}" data-category="${esc(x.category)}" style="flex:${adjusted[i]/sum*100} 1 0;background:${colors[x.category]||'#527fad'}"><span>${esc(x.name)}</span><small>${bytes(x.size)}</small></button>`).join('');
   document.querySelectorAll('.map-block').forEach(b=>b.addEventListener('click',()=>{state.category=b.dataset.category;render();}));
 }
-function setBusy(on, text) { state.busy=on; $('#scanBtn').disabled=on; $('#refreshBtn').disabled=on; $('#duplicatesBtn').disabled=on||!state.items.some(x=>x.model&&x.cleanup_action==='none'); $('#restoreBtn').disabled=on||!state.audits.some(a=>a.restorable>0); $('#progress').classList.toggle('running',on); $('#statusText').textContent=text|| (on?'Scanning…':'Ready'); $('.status-light').classList.toggle('working',on); }
+function setBusy(on, text) { state.busy=on; $('#scanBtn').disabled=on; $('#refreshBtn').disabled=on; $('#duplicatesBtn').disabled=on||!state.items.some(x=>x.model&&x.cleanup_action==='none'); $('#hfPreviewBtn').disabled=on||!state.items.some(x=>x.runtime==='huggingface'); $('#restoreBtn').disabled=on||!state.audits.some(a=>a.restorable>0); $('#progress').classList.toggle('running',on); $('#statusText').textContent=text|| (on?'Scanning…':'Ready'); $('.status-light').classList.toggle('working',on); }
 async function runScan() {
   if(state.busy)return;
   setBusy(true,'Scanning locations…'); $('#warningLine').hidden=true;
@@ -131,6 +132,21 @@ async function restoreLastCleanup() {
   finally{setBusy(false,$('#statusText').textContent);}
 }
 
+async function previewHuggingFacePrune() {
+  if(state.busy)return;
+  setBusy(true,'Running Hugging Face preview…');
+  try {
+    const response=await fetch('/api/hf-prune-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const data=await response.json(); if(!response.ok)throw new Error(data.error||'Preview failed');
+    $('#outputTitle').textContent='Hugging Face prune preview (read-only)';
+    $('#outputNote').textContent=`${data.command} — nothing was removed. Run the same command without --dry-run yourself to prune.`;
+    $('#outputText').textContent=data.output||'No unused revisions reported.';
+    $('#outputDialog').showModal();
+    $('#statusText').textContent='Hugging Face preview complete — no files changed';
+  }catch(err){toast(err.message);$('#statusText').textContent='Preview failed';}
+  finally{setBusy(false,$('#statusText').textContent);}
+}
+
 async function moveToTrash() {
   const selected=selectedItems(); if(!selected.length)return;
   const actions=new Set(selected.map(x=>x.cleanup_action)); if(actions.size!==1)return;
@@ -159,7 +175,7 @@ async function moveToTrash() {
   finally{setBusy(false,$('#statusText').textContent);}
 }
 let toastTimer;function toast(text){const el=$('#toast');el.textContent=text;el.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('visible'),3500);}
-$('#scanBtn').addEventListener('click',runScan);$('#restoreBtn').addEventListener('click',restoreLastCleanup);$('#refreshBtn').addEventListener('click',runScan);$('#cleanBtn').addEventListener('click',moveToTrash);$('#duplicatesBtn').addEventListener('click',findDuplicates);$('#search').addEventListener('input',e=>{state.query=e.target.value;render();});
+$('#scanBtn').addEventListener('click',runScan);$('#restoreBtn').addEventListener('click',restoreLastCleanup);$('#refreshBtn').addEventListener('click',runScan);$('#cleanBtn').addEventListener('click',moveToTrash);$('#duplicatesBtn').addEventListener('click',findDuplicates);$('#hfPreviewBtn').addEventListener('click',previewHuggingFacePrune);$('#search').addEventListener('input',e=>{state.query=e.target.value;render();});
 $('#overrideRecent').addEventListener('change',e=>{state.overrideRecent=e.target.checked;if(!state.overrideRecent)state.items.forEach(x=>{if(!x.can_delete)x.selected=false;});render();if(state.overrideRecent)toast('Age override enabled — recent files can now be selected; model weights stay blocked');});
 $('#selectVisible').addEventListener('change',e=>{const action=selectedItems().find(x=>x.cleanup_action)?.cleanup_action;filtered().filter(x=>selectable(x)&&(!action||x.cleanup_action===action)).forEach(x=>x.selected=e.target.checked);render();});
 $('#sortSize').addEventListener('click',()=>{state.sort='size';state.descending=!state.descending;render();});

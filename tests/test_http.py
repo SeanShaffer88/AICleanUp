@@ -195,6 +195,34 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(entry["path"], str(source))
             self.assertEqual(entry["destination"], str(moved_to))
 
+    def test_hf_preview_requires_a_huggingface_scan_and_returns_output(self):
+        def post():
+            req = urllib.request.Request(
+                self.url + "/api/hf-prune-preview", data=b"{}",
+                headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                return json.load(response)
+
+        with patch.dict(aicleanup.state.findings, {"x": {"id": "x", "runtime": "lmstudio"}}, clear=True):
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                post()
+        self.assertEqual(missing.exception.code, 400)
+
+        preview = {"command": "hf cache prune --dry-run", "output": "Would delete 3 revisions", "warnings": "", "dry_run": True}
+        with patch.dict(aicleanup.state.findings, {"y": {"id": "y", "runtime": "huggingface"}}, clear=True), \
+                patch.object(aicleanup, "huggingface_prune_preview", return_value=preview) as preview_call:
+            data = post()
+        preview_call.assert_called_once_with()
+        self.assertEqual(data["output"], "Would delete 3 revisions")
+        self.assertTrue(data["dry_run"])
+
+        with patch.dict(aicleanup.state.findings, {"y": {"id": "y", "runtime": "huggingface"}}, clear=True), \
+                patch.object(aicleanup, "huggingface_prune_preview", side_effect=RuntimeError("The Hugging Face CLI is not installed")):
+            with self.assertRaises(urllib.error.HTTPError) as broken:
+                post()
+        self.assertEqual(broken.exception.code, 400)
+
     def test_recent_cache_needs_an_explicit_age_override(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
