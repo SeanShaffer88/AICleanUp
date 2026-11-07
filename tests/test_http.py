@@ -195,6 +195,87 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(entry["path"], str(source))
             self.assertEqual(entry["destination"], str(moved_to))
 
+    def test_recent_cache_needs_an_explicit_age_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "cache"
+            root.mkdir()
+            recent = root / "fresh.db"
+            recent.write_text("fresh", encoding="utf-8")
+            trashed = base / "trash" / recent.name
+            item_id = "recent-cache"
+            item = {"id": item_id, "path": str(recent), "root": str(root), "size": 5, "category": "Caches",
+                    "cleanup_action": "trash", "risk": "safe", "can_delete": False, "age_blocked": True,
+                    "blocked_reason": "Modified within the last 7 days; blocked unless you explicitly override the age rule.",
+                    "source": "workspace"}
+
+            def fake_trash(path):
+                trashed.parent.mkdir(exist_ok=True)
+                shutil.move(str(path), str(trashed))
+                return {"route": "system trash", "destination": str(trashed)}
+
+            def post(payload):
+                req = urllib.request.Request(
+                    self.url + "/api/trash", data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    return json.load(response)
+
+            with patch.dict(aicleanup.state.findings, {item_id: dict(item)}, clear=True), \
+                    patch.object(aicleanup.Path, "home", return_value=base / "home"), \
+                    patch.object(aicleanup, "trash_path", side_effect=fake_trash), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=[]), \
+                    patch.object(aicleanup, "open_file_index", return_value={}):
+                blocked = post({"ids": [item_id]})
+                self.assertTrue(recent.exists())
+                self.assertIn("7 days", blocked["errors"][0]["error"])
+
+                with self.assertRaises(urllib.error.HTTPError) as bad:
+                    post({"ids": [item_id], "override_recent": "yes"})
+                self.assertEqual(bad.exception.code, 400)
+
+                accepted = post({"ids": [item_id], "override_recent": True})
+                manifest = json.loads(Path(accepted["audit"]).read_text(encoding="utf-8"))
+
+            self.assertFalse(recent.exists())
+            self.assertTrue(trashed.exists())
+            self.assertEqual(len(accepted["moved"]), 1)
+            self.assertEqual(manifest["items"][0]["override"], "recent-file-age")
+
+    def test_age_override_never_unblocks_models_or_protected_items(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "models"
+            root.mkdir()
+            weight = root / "model.gguf"
+            weight.write_bytes(b"weights")
+            weight_id, block_id = "recent-weight", "recent-blocked"
+            findings = {
+                weight_id: {"id": weight_id, "path": str(weight), "root": str(root), "size": 7,
+                            "category": "Model weights", "cleanup_action": "none", "risk": "re-download",
+                            "can_delete": False, "age_blocked": False, "model": True, "source": "LM Studio"},
+                block_id: {"id": block_id, "path": str(weight), "root": str(root), "size": 7,
+                           "category": "Caches", "cleanup_action": "trash", "risk": "safe",
+                           "can_delete": False, "age_blocked": False, "model": False,
+                           "blocked_reason": "Close the running AI process (ChatGPT) before cleanup.",
+                           "source": "ChatGPT"},
+            }
+            with patch.dict(aicleanup.state.findings, findings, clear=True), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=[]), \
+                    patch.object(aicleanup, "open_file_index", return_value={}), \
+                    patch.object(aicleanup, "trash_path") as trash:
+                req = urllib.request.Request(
+                    self.url + "/api/trash", data=json.dumps({"ids": [weight_id, block_id], "override_recent": True}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    result = json.load(response)
+            trash.assert_not_called()
+            self.assertEqual(result["moved"], [])
+            self.assertEqual(len(result["errors"]), 2)
+            self.assertTrue(weight.exists())
+
     def test_restore_endpoint_returns_files_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

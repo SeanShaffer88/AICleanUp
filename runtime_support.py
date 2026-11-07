@@ -139,6 +139,10 @@ def running_ai_processes():
         for process in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 info = process.info
+                if info.get("pid") == os.getpid():
+                    # AICleanUp must never match its own command line (for example a
+                    # --workspace path that contains a runtime name).
+                    continue
                 text = " ".join([info.get("name") or ""] + (info.get("cmdline") or [])).casefold()
             except psutil.NoSuchProcess:
                 continue

@@ -230,9 +230,10 @@ def scan(roots, include_models=False):
                     risk = "re-download" if is_weight else "safe" if cat in {"Caches", "Ollama partial downloads"} else "inspect"
                     action = "none" if is_weight else "trash"
                     reason = "Model files must be removed through their runtime, never as raw files." if is_weight else None
-                    if not is_weight and age_seconds < MIN_CLEANUP_AGE_SECONDS:
-                        reason = "Modified within the last 7 days; cleanup is blocked until it is older."
-                    if not is_weight and reason is None:
+                    age_blocked = not is_weight and age_seconds < MIN_CLEANUP_AGE_SECONDS
+                    if age_blocked:
+                        reason = "Modified within the last 7 days; blocked unless you explicitly override the age rule."
+                    if not is_weight and not age_blocked:
                         reason = process_block_reason(runtime or label, processes)
                     can_delete = not is_weight and reason is None
                     guidance = None
@@ -249,6 +250,7 @@ def scan(roots, include_models=False):
                                      "modified": datetime.fromtimestamp(file_stat.st_mtime).astimezone().isoformat(timespec="minutes"),
                                      "model": bool(is_weight), "risk": risk, "cleanup_action": action,
                                      "can_delete": can_delete, "blocked_reason": reason, "guidance": guidance,
+                                     "age_blocked": age_blocked,
                                      "selected": cat == "Caches" and can_delete})
                     seen_paths.add(canonical_path)
                 except (OSError, PermissionError):
@@ -594,6 +596,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not isinstance(ids, list) or any(not isinstance(item_id, str) for item_id in ids):
                 return self.send_json({"error": "Item IDs must be provided as a list of strings."}, 400)
             if not ids: return self.send_json({"error": "Select at least one item first."}, 400)
+            override_recent = payload.get("override_recent", False)
+            if not isinstance(override_recent, bool):
+                return self.send_json({"error": "Invalid override option."}, 400)
             processes, open_files = running_ai_processes(), open_file_index()
             audit, errors = [], []
             for item_id in ids:
@@ -603,8 +608,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 try:
                     if item.get("cleanup_action") != "trash" or item.get("risk") in {"caution", "never-delete"}:
                         raise RuntimeError(item.get("blocked_reason") or "Model files must be removed through their runtime, not file-level cleanup.")
+                    overridden = False
                     if not item.get("can_delete"):
-                        raise RuntimeError(item.get("blocked_reason") or "This item is not eligible for cleanup.")
+                        # Only the 7-day rule may be overridden, and only for plain
+                        # cleanup candidates; model weights and protected items stay blocked.
+                        if override_recent and item.get("age_blocked") and not item.get("model") \
+                                and item.get("cleanup_action") == "trash" and item.get("risk") not in {"caution", "never-delete"}:
+                            overridden = True
+                        else:
+                            raise RuntimeError(item.get("blocked_reason") or "This item is not eligible for cleanup.")
                     reason = process_block_reason(item.get("runtime") or item.get("source", ""), processes)
                     if reason: raise RuntimeError(reason)
                     if open_files is None:
@@ -614,7 +626,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         raise RuntimeError(f"File is open by {opened['name']} (PID {opened['pid']}); close it first.")
                     candidate = validate_trash_candidate(p, Path(item["root"]))
                     metadata = os.lstat(candidate)
-                    if time.time() - metadata.st_mtime < MIN_CLEANUP_AGE_SECONDS:
+                    if not overridden and time.time() - metadata.st_mtime < MIN_CLEANUP_AGE_SECONDS:
                         raise RuntimeError("File changed within the last 7 days; rescan after it becomes stale.")
                     if item.get("category") == "Ollama partial downloads" and not is_ollama_partial(candidate):
                         raise RuntimeError("The Ollama partial marker changed; rescan before cleanup.")
@@ -623,7 +635,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         result = {"route": result, "destination": None}
                     audit.append({"path": str(candidate), "size": item["size"], "category": item["category"],
                                   "route": result.get("route"), "destination": result.get("destination"),
-                                  "modified": datetime.fromtimestamp(metadata.st_mtime).astimezone().isoformat(timespec="minutes")})
+                                  "modified": datetime.fromtimestamp(metadata.st_mtime).astimezone().isoformat(timespec="minutes"),
+                                  "override": "recent-file-age" if overridden else None})
                     state.findings.pop(item_id, None)
                 except Exception as exc:
                     errors.append({"path": item["path"], "error": str(exc)})

@@ -217,6 +217,25 @@ class ScannerTests(unittest.TestCase):
                 aicleanup.validate_trash_candidate(link, root)
             self.assertTrue(target.exists())
 
+    def test_recent_cache_is_flagged_for_an_explicit_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cache").mkdir()
+            fresh = root / "Cache" / "fresh.bin"
+            fresh.write_bytes(b"cache")
+            stale = root / "Cache" / "stale.bin"
+            stale.write_bytes(b"cache")
+            old = time.time() - 8 * 86400
+            os.utime(stale, (old, old))
+            items, _ = aicleanup.scan([{"label": "ChatGPT Store", "category": "Caches", "path": root}])
+            by_name = {item["name"]: item for item in items}
+            self.assertTrue(by_name["fresh.bin"]["age_blocked"])
+            self.assertFalse(by_name["fresh.bin"]["can_delete"])
+            self.assertFalse(by_name["fresh.bin"]["selected"])
+            self.assertIn("override", by_name["fresh.bin"]["blocked_reason"])
+            self.assertFalse(by_name["stale.bin"]["age_blocked"])
+            self.assertTrue(by_name["stale.bin"]["can_delete"])
+
     def test_running_client_blocks_candidate_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

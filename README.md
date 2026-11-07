@@ -41,7 +41,8 @@ The scanner treats model weights as a different data layer from client caches. I
 - **Find duplicates** hashes model files with SHA-256 and reports only byte-identical copies. Similar filenames are not treated as duplicates; no hardlinks are created automatically.
 - Ollama model tags are read from manifests and removed only through `ollama rm <model:tag>`, preserving shared content-addressed blobs. A model reported by `ollama ps` cannot be removed.
 - Only Ollama `blobs/*-partial` and `*-partial-<index>` files are considered file-level partial-download candidates. They are never preselected, must be older than seven days, and the Ollama runtime must be stopped.
-- Config/credential filenames are protected. Other cleanup candidates younger than seven days, open in another process, or associated with a running AI client/runtime are blocked. Process and open-handle checks use `psutil`; if checks are unavailable, destructive file actions fail closed.
+- Config/credential filenames are protected. Cleanup candidates open in another process or associated with a running AI client/runtime are blocked; process and open-handle checks use `psutil`, and if checks are unavailable destructive file actions fail closed.
+- Files modified within the last seven days are blocked by default and shown with a **RECENT** marker. Turning on **Allow recent files** in the toolbar makes only those plain cleanup candidates selectable; the confirmation dialog then says the age override is in effect, and every affected manifest entry records `"override": "recent-file-age"`. Model weights, protected config, and process-blocked items stay blocked either way.
 
 ## Cleanup safety
 
