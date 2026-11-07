@@ -393,6 +393,58 @@ def empty_directories(roots, limit=MAX_EMPTY_DIRS):
     return folders, False
 
 
+def sweep_empty_directories(paths, roots, processes=None):
+    """Move the given empty folders to Trash, re-validating each one.
+
+    Shared by the HTTP endpoint and the CLI so both paths enforce exactly the same
+    containment, emptiness, symlink, layout-folder, and process rules.
+    """
+    if not paths:
+        raise RuntimeError("Select at least one empty folder first.")
+    root_paths = []
+    for root_value in roots:
+        try:
+            root_paths.append(Path(root_value).resolve(strict=True))
+        except OSError:
+            continue
+    if not root_paths:
+        raise RuntimeError("Run a scan first; only folders inside scanned locations can be cleaned.")
+    if processes is None:
+        processes = running_ai_processes()
+    if processes is None:
+        raise RuntimeError("Cannot verify running processes; install requirements and retry.")
+    moved, errors = [], []
+    # Deepest first, so a swept folder is empty by the time its parent is checked.
+    for value in sorted(set(paths), key=lambda entry: len(Path(entry).parts), reverse=True):
+        try:
+            candidate, failure = None, None
+            for root in root_paths:
+                try:
+                    candidate = validate_empty_directory(Path(value), root)
+                    runtime = runtime_for_source(str(root))
+                    if runtime:
+                        reason = process_block_reason(str(root), processes)
+                        if reason:
+                            raise RuntimeError(reason)
+                    failure = None
+                    break
+                except RuntimeError as exc:
+                    candidate, failure = None, exc
+            if candidate is None:
+                raise failure or RuntimeError("Folder is outside the scanned locations; skipped")
+            result = trash_path(candidate)
+            if isinstance(result, str):
+                result = {"route": result, "destination": None}
+            moved.append({"path": str(candidate), "kind": "directory", "size": 0, "category": "Empty folder",
+                          "route": result.get("route"), "destination": result.get("destination"), "modified": None})
+        except Exception as exc:
+            errors.append({"path": value, "error": str(exc)})
+    audit_path, audit_error = write_audit_manifest(moved)
+    if audit_error:
+        errors.append({"path": "audit manifest", "error": audit_error})
+    return {"moved": moved, "errors": errors, "audit": audit_path}
+
+
 def _trash_roots():
     """Candidate directories where the OS browser/desktop trash keeps files."""
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
@@ -842,47 +894,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json({"error": "Folder paths must be provided as a list of strings."}, 400)
             if not paths:
                 return self.send_json({"error": "Select at least one empty folder first."}, 400)
-            root_paths = []
-            for root_value in scanned_roots():
-                try:
-                    root_paths.append(Path(root_value).resolve(strict=True))
-                except OSError:
-                    continue
-            if not root_paths:
-                return self.send_json({"error": "Run a scan first; only folders inside scanned locations can be cleaned."}, 400)
-            processes = running_ai_processes()
-            if processes is None:
-                return self.send_json({"error": "Cannot verify running processes; install requirements and retry."}, 400)
-            moved, errors = [], []
-            # Deepest first, so a swept folder is empty by the time its parent is checked.
-            for value in sorted(set(paths), key=lambda entry: len(Path(entry).parts), reverse=True):
-                try:
-                    candidate, failure = None, None
-                    for root in root_paths:
-                        try:
-                            candidate = validate_empty_directory(Path(value), root)
-                            runtime = runtime_for_source(str(root))
-                            if runtime:
-                                reason = process_block_reason(str(root), processes)
-                                if reason:
-                                    raise RuntimeError(reason)
-                            failure = None
-                            break
-                        except RuntimeError as exc:
-                            candidate, failure = None, exc
-                    if candidate is None:
-                        raise failure or RuntimeError("Folder is outside the scanned locations; skipped")
-                    result = trash_path(candidate)
-                    if isinstance(result, str):
-                        result = {"route": result, "destination": None}
-                    moved.append({"path": str(candidate), "kind": "directory", "size": 0, "category": "Empty folder",
-                                  "route": result.get("route"), "destination": result.get("destination"), "modified": None})
-                except Exception as exc:
-                    errors.append({"path": value, "error": str(exc)})
-            audit_path, audit_error = write_audit_manifest(moved)
-            if audit_error: errors.append({"path": "audit manifest", "error": audit_error})
+            try:
+                result = sweep_empty_directories(paths, scanned_roots())
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 400)
             remaining, _ = empty_directories(scanned_roots())
-            return self.send_json({"moved": moved, "errors": errors, "audit": audit_path, "remaining": len(remaining)})
+            result["remaining"] = len(remaining)
+            return self.send_json(result)
         if parsed.path == "/api/duplicates/cancel":
             cancelling = duplicate_progress.request_cancel()
             return self.send_json({"cancelling": cancelling, "progress": duplicate_progress.snapshot()})
@@ -992,6 +1010,13 @@ def main():
     parser.add_argument("--restore", nargs="?", const="latest", metavar="MANIFEST",
                         help="Restore files listed in a cleanup manifest (newest by default). Preview only unless --confirm is given.")
     parser.add_argument("--confirm", action="store_true", help="Apply the --restore preview. Restores always need this flag.")
+    parser.add_argument("--duplicates", action="store_true",
+                        help="Hash model weights and report byte-identical SHA-256 duplicates (report only).")
+    parser.add_argument("--empty-dirs", action="store_true",
+                        help="List folders inside the scanned locations that hold no files at all.")
+    parser.add_argument("--sweep-empty", action="store_true",
+                        help="Move the listed empty folders to Trash. Preview only unless --confirm is given.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON for --duplicates or --empty-dirs.")
     parser.add_argument("--gui", action="store_true", help="Launch the local browser interface.")
     parser.add_argument("--port", type=int, default=8765, help="GUI port (default: 8765).")
     parser.add_argument("--host", default="127.0.0.1", help="GUI bind address (default: 127.0.0.1; use 0.0.0.0 only behind a trusted proxy).")
@@ -1033,12 +1058,83 @@ def main():
         try: server.serve_forever()
         except KeyboardInterrupt: print("\\nStopping AICleanUp.")
         return
-    roots = [x for x in known_targets() if args.include_models or not x.get("models")]
+    targets = known_targets()
+    roots = [x for x in targets if args.include_models or args.duplicates or not x.get("models")]
     if args.workspace:
         p = Path(args.workspace).expanduser()
         if not p.is_dir(): parser.error(f"Workspace is not a directory: {p}")
         roots.append({"label": "Selected workspace", "category": "Project files", "path": p, "workspace": True})
-    items, warnings = scan(roots, args.include_models)
+
+    if args.empty_dirs or args.sweep_empty:
+        # Model stores are where empty folders pile up, so this mode ignores the
+        # model-weights filter that only affects file findings.
+        root_paths = [str(entry["path"]) for entry in targets]
+        if args.workspace:
+            root_paths.append(str(Path(args.workspace).expanduser()))
+        folders, truncated = empty_directories(root_paths)
+        report = {"kind": "empty-folders", "folders": folders, "count": len(folders), "truncated": truncated}
+        if args.sweep_empty and args.confirm:
+            if not folders:
+                # Nothing to do is a success, not an error.
+                report.update({"swept": True, "moved": [], "errors": [], "audit": None, "remaining": 0})
+            else:
+                try:
+                    swept = sweep_empty_directories([folder["path"] for folder in folders], root_paths)
+                except RuntimeError as exc:
+                    parser.error(str(exc))
+                remaining, _ = empty_directories(root_paths)
+                report.update({"swept": True, "moved": swept["moved"], "errors": swept["errors"],
+                               "audit": swept["audit"], "remaining": len(remaining)})
+        elif args.sweep_empty:
+            report["preview"] = True
+        if args.json:
+            print(json.dumps(report, indent=2))
+            return
+        if not folders:
+            print("AICleanUp found no empty folders in the scanned locations.")
+            return
+        print(f"AICleanUp found {len(folders):,} empty folder(s)" + (" (first 500 shown)" if truncated else "") + ":")
+        for folder in folders[:40]:
+            print(f"  {folder['depth']} deep  {folder['path']}")
+        if len(folders) > 40:
+            print(f"  ...and {len(folders) - 40:,} more")
+        if not args.sweep_empty:
+            print("Listing only. Add --sweep-empty --confirm to move exactly these folders to Trash.")
+            return
+        if not args.confirm:
+            print("Preview only. Re-run with --sweep-empty --confirm to move these folders to Trash.")
+            return
+        for error in report["errors"]:
+            print(f"  skipped  {error['path']}: {error['error']}")
+        print(f"Moved {len(report['moved'])} empty folder(s) to Trash; {report['remaining']} still empty.")
+        if report["audit"]:
+            print(f"Audit manifest: {report['audit']}")
+        return
+
+    items, warnings = scan(roots, args.include_models or args.duplicates)
+
+    if args.duplicates:
+        groups = exact_model_duplicates(list(items))
+        wasted = sum(group["size"] * (len(group["items"]) - 1) for group in groups)
+        if args.json:
+            print(json.dumps({"kind": "exact-duplicates", "count": len(groups), "duplicated_bytes": wasted,
+                              "groups": [{"sha256": group["sha256"], "size": group["size"],
+                                          "copies": len(group["items"]), "duplicated_bytes": group["size"] * (len(group["items"]) - 1),
+                                          "files": [{"path": item["path"], "name": item["name"], "source": item.get("source"),
+                                                     "runtime": item.get("runtime")} for item in group["items"]]}
+                                         for group in groups]}, indent=2))
+            return
+        if not groups:
+            print("No byte-identical model files found; similar names are never treated as duplicates.")
+            return
+        print(f"AICleanUp found {len(groups)} exact SHA-256 duplicate group(s) · {human_size(wasted)} duplicated:")
+        for group in groups[:20]:
+            paths = "  <->  ".join(item["path"] for item in group["items"][:4])
+            print(f"  {human_size(group['size']):>10} x{len(group['items'])}  {group['sha256'][:16]}...  {paths}")
+        if len(groups) > 20:
+            print(f"  ...and {len(groups) - 20} more group(s)")
+        print("Report only: nothing was deleted, moved, or hardlinked. Remove copies through each model runtime.")
+        return
     by_category = {}
     for item in items: by_category[item["category"]] = by_category.get(item["category"], 0) + item["size"]
     print(f"AICleanUp scan complete: {len(items):,} candidate files")
