@@ -78,8 +78,8 @@ async function moveToTrash() {
     const data=await response.json();if(!response.ok)throw new Error(data.error||'Unable to move files');
     const moved=new Set((data.moved||[]).map(x=>x.path)); state.items=state.items.filter(x=>!moved.has(x.path));
     render();
-    if(data.errors?.length){toast(`${data.moved.length} moved · ${data.errors.length} skipped. See details in the app status.`);$('#statusText').textContent=`${data.moved.length} moved · ${data.errors.length} skipped`;}
-    else {toast(`${data.moved.length} item${data.moved.length===1?'':'s'} moved to Trash · audit log saved`);$('#statusText').textContent=`Cleanup complete · audit saved to ${data.audit}`;}
+    if(data.errors?.length){const detail=`${data.errors[0].path}: ${data.errors[0].error}`;toast(`${data.moved.length} moved · ${data.errors.length} skipped · ${data.errors[0].error}`);$('#statusText').textContent=`${data.moved.length} moved · ${data.errors.length} skipped`;$('#statusText').title=detail;}
+    else {toast(`${data.moved.length} item${data.moved.length===1?'':'s'} moved to Trash · audit log saved`);$('#statusText').textContent=`Cleanup complete · audit saved to ${data.audit}`;$('#statusText').title=data.audit||'';}
   }catch(err){toast(err.message);$('#statusText').textContent='Cleanup failed';}
   finally{setBusy(false,$('#statusText').textContent);}
 }

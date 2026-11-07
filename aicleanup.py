@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from urllib.parse import urlparse
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "web"
 MAX_FILES = 150_000
+MAX_REQUEST_BYTES = 1_048_576
 MODEL_PATTERNS = ("*.gguf", "*.safetensors", "*.safetensor", "*.ckpt", "*.pth", "*.pt", "*.bin")
 SENSITIVE_NAMES = {".env", ".env.local", "credentials", "credentials.json", "token", "tokens", "auth.json", "secrets.json", "id_rsa", "id_ed25519"}
 
@@ -116,47 +118,62 @@ def version_key(path: Path):
 
 def scan(roots, include_models=False):
     findings, warnings, total_seen = [], [], 0
-    for entry in roots:
-        root, label = entry["path"], entry["label"]
+    seen_paths = set()
+    stop_scan = False
+    # Give an explicitly selected workspace first claim on overlapping paths so
+    # its scratch/backup findings retain the more specific category.
+    ordered_roots = sorted(roots, key=lambda entry: not bool(entry.get("workspace", False)))
+    for entry in ordered_roots:
+        if stop_scan:
+            break
+        label = entry["label"]
         is_model = entry.get("models", False)
         if is_model and not include_models:
             continue
-        patterns = load_ignore(root)
         try:
-            resolved_root = root.resolve(strict=True)
+            root = Path(entry["path"]).resolve(strict=True)
         except OSError:
             continue
+        if not root.is_dir():
+            continue
+        patterns = load_ignore(root)
+        resolved_root = root
         for current, dirs, files in os.walk(root, followlinks=False):
             current_path = Path(current)
             # Do not cross symlinked or excluded directories.
             dirs[:] = [d for d in dirs if not (current_path / d).is_symlink() and not ignored(current_path / d, patterns, resolved_root)]
             for filename in files:
-                total_seen += 1
-                if total_seen > MAX_FILES:
+                if total_seen >= MAX_FILES:
                     warnings.append(f"Scan stopped at {MAX_FILES:,} files for safety. Narrow the selected folder.")
+                    stop_scan = True
                     break
+                total_seen += 1
                 p = current_path / filename
                 try:
                     if p.is_symlink() or ignored(p, patterns, resolved_root): continue
-                    stat = os.stat(p, follow_symlinks=False)
-                    if not p.is_file(): continue
+                    file_stat = os.stat(p, follow_symlinks=False)
+                    if not stat.S_ISREG(file_stat.st_mode): continue
+                    canonical_path = str(p.resolve(strict=True))
+                    if canonical_path in seen_paths: continue
                     if is_model and not any(fnmatch.fnmatch(filename.lower(), pat) for pat in MODEL_PATTERNS):
                         continue
                     cat = category_for(p, entry["category"], entry.get("workspace", False))
                     # Workspace cleanup candidates are intentionally limited to known scratch / backup patterns.
                     if entry.get("workspace"):
                         scratch = any(part in {".ai_scratch", "tmp_gen"} for part in p.parts)
-                        stale_scratch = scratch and time.time() - stat.st_mtime > 14 * 86400 and p.suffix.lower() in {".md", ".json", ".txt", ".log"}
+                        stale_scratch = scratch and time.time() - file_stat.st_mtime > 14 * 86400 and p.suffix.lower() in {".md", ".json", ".txt", ".log"}
                         backup = p.suffix.lower() in {".diff", ".patch", ".bak", ".old"} or p.name.endswith("~")
                         if not (stale_scratch or backup): continue
-                    if stat.st_size == 0: continue
+                    if file_stat.st_size == 0: continue
                     findings.append({"id": uuid.uuid4().hex, "path": str(p), "name": p.name, "root": str(root),
-                                     "source": label, "category": cat, "size": stat.st_size,
-                                     "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="minutes"),
+                                     "source": label, "category": cat, "size": file_stat.st_size,
+                                     "modified": datetime.fromtimestamp(file_stat.st_mtime).astimezone().isoformat(timespec="minutes"),
                                      "model": bool(is_model), "selected": cat == "Caches" and not is_model})
+                    seen_paths.add(canonical_path)
                 except (OSError, PermissionError):
                     continue
-            if total_seen > MAX_FILES: break
+            if stop_scan:
+                break
     # Flag versioned siblings as likely historical variants; never auto-select them.
     groups = {}
     for f in findings:
@@ -180,6 +197,30 @@ def human_size(value):
         if n < 1024 or unit == units[-1]:
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
+
+
+def validate_trash_candidate(path: Path, root: Path):
+    """Recheck containment and every path component immediately before trashing."""
+    root = Path(root).resolve(strict=True)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("Item is outside the scanned folder; skipped") from exc
+    if not relative.parts:
+        raise RuntimeError("A scan root itself cannot be moved to Trash")
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RuntimeError("Symbolic links are not eligible for cleanup; skipped")
+    resolved = candidate.resolve(strict=True)
+    if resolved != candidate:
+        raise RuntimeError("Item path changed since scanning; skipped")
+    metadata = os.lstat(candidate)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("Only regular files can be moved to Trash; skipped")
+    return candidate
 
 
 def trash_path(path: Path):
@@ -226,25 +267,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         parsed = urlparse(self.path)
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).netloc.lower() != self.headers.get("Host", "").lower():
+            return self.send_json({"error": "Cross-origin requests are not allowed."}, 403)
         try:
-            payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+            content_length = int(self.headers.get("Content-Length", "0"))
+            if content_length < 0 or content_length > MAX_REQUEST_BYTES:
+                self.close_connection = True
+                return self.send_json({"error": "Request body is too large."}, 413)
+            payload = json.loads(self.rfile.read(content_length) or b"{}")
         except (ValueError, json.JSONDecodeError): return self.send_json({"error": "Invalid request body"}, 400)
+        if not isinstance(payload, dict):
+            return self.send_json({"error": "Request body must be a JSON object."}, 400)
         if parsed.path == "/api/scan":
+            include_models = payload.get("include_models", False)
+            workspace = payload.get("workspace", "")
+            if not isinstance(include_models, bool) or not isinstance(workspace, str):
+                return self.send_json({"error": "Invalid scan options."}, 400)
             roots = []
             for target in known_targets():
-                if target.get("models") and not payload.get("include_models"): continue
+                if target.get("models") and not include_models: continue
                 roots.append(target)
-            workspace = payload.get("workspace", "").strip()
+            workspace = workspace.strip()
             if workspace:
                 p = Path(workspace).expanduser()
                 if not p.exists() or not p.is_dir(): return self.send_json({"error": "That workspace folder does not exist or is not a directory."}, 400)
                 roots.append({"label": "Selected workspace", "category": "Project files", "path": p, "workspace": True})
-            items, warnings = scan(roots, payload.get("include_models", False))
+            items, warnings = scan(roots, include_models)
             state.findings = {item["id"]: item for item in items}
             state.roots = roots
             return self.send_json({"items": items, "warnings": warnings, "scanned": len(roots)})
         if parsed.path == "/api/trash":
             ids = payload.get("ids", [])
+            if not isinstance(ids, list) or any(not isinstance(item_id, str) for item_id in ids):
+                return self.send_json({"error": "Item IDs must be provided as a list of strings."}, 400)
             if not ids: return self.send_json({"error": "Select at least one item first."}, 400)
             audit = [] ; errors = []
             for item_id in ids:
@@ -252,19 +308,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not item: continue
                 p = Path(item["path"])
                 try:
-                    # Verify the current target still lives within the exact root we scanned.
-                    root = Path(item["root"]).resolve(strict=True); resolved = p.resolve(strict=True)
-                    if root != resolved and root not in resolved.parents: raise RuntimeError("Item is outside the scanned folder; skipped")
-                    if not resolved.is_file() or resolved.is_symlink(): raise RuntimeError("Not a regular file; skipped")
-                    route = trash_path(resolved)
-                    audit.append({"path": str(resolved), "size": item["size"], "category": item["category"], "route": route})
+                    root = Path(item["root"])
+                    candidate = validate_trash_candidate(p, root)
+                    route = trash_path(candidate)
+                    audit.append({"path": str(candidate), "size": item["size"], "category": item["category"], "route": route})
                     state.findings.pop(item_id, None)
                 except Exception as exc: errors.append({"path": item["path"], "error": str(exc)})
-            audit_dir = Path.home() / ".aicleanup" / "audit"
-            audit_dir.mkdir(parents=True, exist_ok=True)
-            audit_path = audit_dir / f"cleanup_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            if audit: audit_path.write_text(json.dumps({"created": datetime.now(timezone.utc).isoformat(), "items": audit}, indent=2), encoding="utf-8")
-            return self.send_json({"moved": audit, "errors": errors, "audit": str(audit_path) if audit else None})
+            audit_path = None
+            if audit:
+                audit_dir = Path.home() / ".aicleanup" / "audit"
+                audit_path = audit_dir / f"cleanup_audit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+                temp_path = audit_path.with_suffix(".json.tmp")
+                try:
+                    audit_dir.mkdir(parents=True, exist_ok=True)
+                    temp_path.write_text(json.dumps({"created": datetime.now(timezone.utc).isoformat(), "items": audit}, indent=2), encoding="utf-8")
+                    os.replace(temp_path, audit_path)
+                except OSError as exc:
+                    errors.append({"path": str(audit_path), "error": f"Items moved, but audit manifest could not be saved: {exc}"})
+                    audit_path = None
+            return self.send_json({"moved": audit, "errors": errors, "audit": str(audit_path) if audit_path else None})
         return self.send_json({"error": "Not found"}, 404)
 
 
@@ -275,10 +337,11 @@ def main():
     parser.add_argument("--include-models", action="store_true", help="Include model weights (not selected for cleanup by default).")
     parser.add_argument("--gui", action="store_true", help="Launch the local browser interface.")
     parser.add_argument("--port", type=int, default=8765, help="GUI port (default: 8765).")
+    parser.add_argument("--host", default="127.0.0.1", help="GUI bind address (default: 127.0.0.1; use 0.0.0.0 only behind a trusted proxy).")
     args = parser.parse_args()
     if args.gui:
-        server = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-        print(f"AICleanUp is ready at http://127.0.0.1:{args.port}")
+        server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
+        print(f"AICleanUp is ready at http://127.0.0.1:{args.port} (bound to {args.host})")
         try:
             import webbrowser; webbrowser.open(f"http://127.0.0.1:{args.port}")
         except Exception: pass
