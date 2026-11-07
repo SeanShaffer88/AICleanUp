@@ -66,6 +66,43 @@ class OllamaCommandTests(unittest.TestCase):
             detected = runtime_support.running_ai_processes()
         self.assertEqual([process["runtime"] for process in detected], ["chatgpt"])
 
+    def test_hf_preview_is_dry_run_only_and_never_uses_a_shell(self):
+        with patch.object(runtime_support.shutil, "which",
+                          side_effect=lambda name: "/opt/bin/hf" if name == "hf" else None), \
+                patch.object(runtime_support.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 0, "Would free 12.0G", "")) as run:
+            result = runtime_support.huggingface_prune_preview()
+        self.assertEqual(result["output"], "Would free 12.0G")
+        self.assertTrue(result["dry_run"])
+        run.assert_called_once_with(["/opt/bin/hf", "cache", "prune", "--dry-run"],
+                                    capture_output=True, text=True, timeout=45, check=False)
+        self.assertEqual(result["command"], "/opt/bin/hf cache prune --dry-run")
+
+    def test_hf_preview_surfaces_cli_errors_and_timeouts(self):
+        with patch.object(runtime_support.shutil, "which",
+                          side_effect=lambda name: "/opt/bin/hf" if name == "hf" else None):
+            with patch.object(runtime_support.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 1, "", "cache not found")):
+                with self.assertRaisesRegex(RuntimeError, "cache not found"):
+                    runtime_support.huggingface_prune_preview()
+            with patch.object(runtime_support.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 45)):
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    runtime_support.huggingface_prune_preview()
+
+    def test_hf_preview_requires_the_cli(self):
+        with patch.object(runtime_support.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "Hugging Face CLI is not installed"):
+                runtime_support.huggingface_prune_preview()
+
+    def test_hf_preview_falls_back_to_the_legacy_cli_name(self):
+        with patch.object(runtime_support.shutil, "which",
+                          side_effect=lambda name: "/opt/bin/huggingface-cli" if name == "huggingface-cli" else None), \
+                patch.object(runtime_support.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 0, "preview", "")) as run:
+            runtime_support.huggingface_prune_preview()
+        run.assert_called_once_with(["/opt/bin/huggingface-cli", "cache", "prune", "--dry-run"],
+                                    capture_output=True, text=True, timeout=45, check=False)
+
 
 if __name__ == "__main__":
     unittest.main()

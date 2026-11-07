@@ -38,6 +38,7 @@ Installer binaries and `Program Files`/`AnthropicClaude/app-*` directories are i
 The scanner treats model weights as a different data layer from client caches. It checks Ollama (`OLLAMA_MODELS` or `.ollama/models` and the Linux system store), LM Studio (`LMSTUDIO_HOME`, `.lmstudio-home-pointer`, `.lmstudio/models`, and legacy LM Studio cache), GPT4All, llama.cpp, Hugging Face/Transformers cache overrides, LocalAI (`LOCALAI_MODELS_PATH`), Jan, and the current install folder's text-generation-webui/LocalAI `models` directories.
 
 - Model weights are opt-in for viewing, marked **re-download risk**, and never eligible for raw file-to-Trash cleanup. LM Studio models should be removed in **My Models**; Hugging Face cache repos should use `hf cache rm` or a reviewed `hf cache prune --dry-run`.
+- **HF prune preview** (toolbar button, or `python3 aicleanup.py --hf-prune-preview`) runs the Hugging Face CLI's own `hf cache prune --dry-run` and shows its report. AICleanUp only displays that output and never prunes, deletes, or rewrites the Hugging Face cache itself; run the same command without `--dry-run` yourself when you are ready.
 - **Find duplicates** hashes model files with SHA-256 and reports only byte-identical copies. Similar filenames are not treated as duplicates; no hardlinks are created automatically.
 - Ollama model tags are read from manifests and removed only through `ollama rm <model:tag>`, preserving shared content-addressed blobs. A model reported by `ollama ps` cannot be removed.
 - Only Ollama `blobs/*-partial` and `*-partial-<index>` files are considered file-level partial-download candidates. They are never preselected, must be older than seven days, and the Ollama runtime must be stopped.
@@ -75,4 +76,5 @@ python3 aicleanup.py --dry-run
 python3 aicleanup.py --workspace ~/src/my-project
 python3 aicleanup.py --include-models
 python3 aicleanup.py --restore            # preview the newest cleanup
+python3 aicleanup.py --hf-prune-preview   # Hugging Face read-only prune report
 ```

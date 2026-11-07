@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from runtime_support import (
-    exact_model_duplicates, extend_runtime_targets, is_model_weight_path, is_ollama_partial, ollama_model_items,
+    exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
 
@@ -564,6 +564,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result["errors"].append({"path": "restore log", "error": log_error})
             result["restore_log"] = log_path
             return self.send_json(result)
+        if parsed.path == "/api/hf-prune-preview":
+            if not any(item.get("runtime") == "huggingface" for item in state.findings.values()):
+                return self.send_json({"error": "Scan with model weights enabled first; no Hugging Face cache is in the current results."}, 400)
+            try:
+                return self.send_json(huggingface_prune_preview())
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/duplicates":
             return self.send_json({"groups": exact_model_duplicates(list(state.findings.values()))})
         if parsed.path == "/api/ollama-remove":
@@ -651,6 +658,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print a scan summary without modifying files (default behavior).")
     parser.add_argument("--workspace", help="Also inspect a project folder for old scratch and patch files.")
     parser.add_argument("--include-models", action="store_true", help="Include model weights (not selected for cleanup by default).")
+    parser.add_argument("--hf-prune-preview", action="store_true",
+                        help="Print Hugging Face's read-only `hf cache prune --dry-run` preview and exit.")
     parser.add_argument("--restore", nargs="?", const="latest", metavar="MANIFEST",
                         help="Restore files listed in a cleanup manifest (newest by default). Preview only unless --confirm is given.")
     parser.add_argument("--confirm", action="store_true", help="Apply the --restore preview. Restores always need this flag.")
@@ -658,6 +667,17 @@ def main():
     parser.add_argument("--port", type=int, default=8765, help="GUI port (default: 8765).")
     parser.add_argument("--host", default="127.0.0.1", help="GUI bind address (default: 127.0.0.1; use 0.0.0.0 only behind a trusted proxy).")
     args = parser.parse_args()
+    if args.hf_prune_preview:
+        try:
+            preview = huggingface_prune_preview()
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        print(f"Read-only preview: {preview['command']}")
+        print(preview["output"])
+        if preview.get("warnings"):
+            print(f"Warning: {preview['warnings']}")
+        print("AICleanUp only printed the preview; no cache files were changed.")
+        return
     if args.restore:
         try:
             manifest = latest_audit_manifest() if args.restore in {"latest", ""} else resolve_audit_manifest(args.restore)
