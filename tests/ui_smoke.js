@@ -31,7 +31,7 @@ const duplicateGroup = {
   ],
 };
 const fixtures = [
-  { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
+  { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, link_target: '/home/u/.cache/hf/hub/models--x/blobs/abc123', modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
   { id: 'b', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/notes.json', root: '/home/u/.cache/hf/hub', name: 'notes.json', size: 2048, modified: daysAgo(10), category: 'Caches', risk: 'safe', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
   { id: 'c', path: '/home/u/.cache/hf/hub/blobs/fresh-partial', root: '/home/u/.cache/hf/hub', name: 'fresh-partial', size: 1024, modified: daysAgo(1), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: false, age_blocked: true, blocked_reason: 'Modified within the last 7 days; blocked unless you explicitly override the age rule.' },
   { id: 'e', path: '/home/u/.ollama/models/blobs/old-partial', root: '/home/u/.ollama/models', name: 'old-partial', size: 512, modified: daysAgo(20), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
@@ -114,6 +114,8 @@ setTimeout(async () => {
   click($$('#fileRows .file-row')[0]);
   check('node info shows the selection', $('#nodeInfo').textContent.includes('model.safetensors'));
   check('node info marks runtime-protected weights', $('#nodeInfo').textContent.includes('Protected'));
+  check('node info shows the shared blob', $('#nodeInfo').textContent.includes('blobs/abc123'), $('#nodeInfo').textContent.slice(0, 120));
+  check('node info explains revision links', $('#nodeInfo').textContent.includes('counted once'), $('#nodeInfo').textContent.slice(0, 200));
   check('inspect select disabled for weights', $('#inspectSelect').disabled === true);
   check('branch info resolves the folder', $('#branchInfo').textContent.includes('.cache'));
 
@@ -152,11 +154,13 @@ setTimeout(async () => {
   if (exported[0]) {
     const csv = await exported[0].text();
     check('CSV has header plus rows', csv.split('\r\n').length === fixtures.length + 1, csv.split('\r\n').length);
+    check('CSV exports the blob target', csv.split('\r\n')[0].endsWith('link_target'), csv.split('\r\n')[0]);
     check('CSV escapes blocked reasons', csv.includes('"Model files must be removed'));
   }
   if (exported[1]) {
     const parsed = JSON.parse(await exported[1].text());
     check('JSON export records the filters', parsed.count === fixtures.length && 'filters' in parsed);
+    check('JSON export keeps the blob target', parsed.items.some((item) => item.link_target === '/home/u/.cache/hf/hub/models--x/blobs/abc123'));
   }
   check('toast reports the export', $('#toast').textContent.includes('Exported'), $('#toast').textContent);
 

@@ -297,6 +297,85 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class SymlinkedModelStoreTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(aicleanup, "running_ai_processes", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def build_hub(self, base):
+        hub = base / "hub"
+        blobs = hub / "models--acme--demo/blobs"
+        blobs.mkdir(parents=True)
+        weights = blobs / ("a" * 64)
+        weights.write_bytes(b"w" * 4096)
+        config = blobs / ("b" * 64)
+        config.write_text('{"arch":"demo"}', encoding="utf-8")
+        metadata = blobs / ("c" * 64)
+        metadata.write_bytes(b"header")
+        for revision in ("rev1", "rev2"):
+            snapshot = hub / "models--acme--demo/snapshots" / revision
+            snapshot.mkdir(parents=True)
+            for name, target in (("model.safetensors", weights), ("config.json", config), ("model.safetensors.metadata", metadata)):
+                (snapshot / name).symlink_to(os.path.relpath(target, snapshot))
+        return hub, weights
+
+    def scan_hub(self, hub):
+        roots = [{"label": "Hugging Face models", "category": "Model weights", "path": hub,
+                  "models": True, "runtime": "huggingface"}]
+        return aicleanup.scan(roots, include_models=True)[0]
+
+    def test_revision_symlinks_are_followed_and_counted_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            hub, weights = self.build_hub(Path(temp))
+            items = self.scan_hub(hub)
+            self.assertEqual(len(items), 1, [item["path"] for item in items])
+            finding = items[0]
+            self.assertEqual(Path(finding["path"]).relative_to(hub).as_posix(), "models--acme--demo/snapshots/rev1/model.safetensors")
+            self.assertEqual(finding["size"], 4096)
+            self.assertEqual(finding["link_target"], str(weights))
+            self.assertEqual(finding["category"], "Model weights")
+            self.assertEqual(finding["cleanup_action"], "none")
+            self.assertFalse(finding["can_delete"])
+            self.assertTrue(Path(finding["path"]).is_symlink())
+
+    def test_symlinks_that_escape_the_model_root_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            hub, _ = self.build_hub(base)
+            outside = base / "outside.gguf"
+            outside.write_bytes(b"x" * 1024)
+            snapshot = hub / "models--acme--demo/snapshots/rev1"
+            (snapshot / "escape.gguf").symlink_to(outside)
+            items = self.scan_hub(hub)
+            self.assertNotIn("escape.gguf", {Path(item["path"]).name for item in items})
+            self.assertTrue(outside.is_file())
+
+    def test_symlink_loops_and_broken_links_do_not_break_the_scan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            hub, _ = self.build_hub(base)
+            snapshot = hub / "models--acme--demo/snapshots/rev2"
+            (snapshot / "loop.gguf").symlink_to(snapshot / "loop.gguf")
+            (snapshot / "broken.gguf").symlink_to(snapshot / "missing.gguf")
+            items = self.scan_hub(hub)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(Path(items[0]["path"]).parent.name, "rev1")
+
+    def test_cache_roots_still_ignore_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            cache = base / "cache"
+            cache.mkdir()
+            real = base / "real.db"
+            real.write_bytes(b"cache data")
+            (cache / "linked.db").symlink_to(real)
+            roots = [{"label": "ChatGPT cache", "category": "Caches", "path": cache}]
+            items, _ = aicleanup.scan(roots, include_models=False)
+            self.assertEqual(items, [])
+            self.assertTrue(real.is_file())
+
+
 class EmptyDirectoryTests(unittest.TestCase):
     def test_empty_directories_reports_file_free_trees_deepest_first(self):
         with tempfile.TemporaryDirectory() as temp:
