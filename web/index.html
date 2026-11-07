@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#17191d" />
+  <title>AICleanUp — Disk Analyzer</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="titlebar">
+    <div class="brand"><div class="brand-mark"><span></span><span></span><span></span><span></span></div><strong>AI<span>CleanUp</span></strong><small>DISK ANALYZER</small></div>
+    <div class="titlebar-center">Local AI storage overview</div>
+    <div class="titlebar-right"><span class="secure-dot"></span> SCAN STAYS ON THIS DEVICE</div>
+  </header>
+  <main class="app-shell">
+    <section class="toolbar" aria-label="Scan controls">
+      <button class="primary-btn" id="scanBtn"><svg viewBox="0 0 20 20"><path d="M16.6 8A6.8 6.8 0 1 0 17 11M17 4v4h-4"/></svg><span>Scan</span></button>
+      <div class="toolbar-separator"></div>
+      <label class="path-input"><svg viewBox="0 0 20 20"><path d="M2.5 5.5h6l1.7 1.8h7.3v8.2h-15z"/></svg><input id="workspace" type="text" placeholder="Add a project folder to scan…" aria-label="Project folder path" /><button id="clearPath" title="Clear folder path">×</button></label>
+      <label class="check-option"><input type="checkbox" id="includeModels" /><span class="fake-check"></span> Include model weights</label>
+      <div class="toolbar-spacer"></div>
+      <button class="toolbar-btn" id="refreshBtn" title="Rescan known locations"><svg viewBox="0 0 20 20"><path d="M16.5 8a6.7 6.7 0 1 0 .2 3M16.5 3.7V8h-4.3"/></svg><span>Rescan</span></button>
+      <button class="clean-btn" id="cleanBtn" disabled><svg viewBox="0 0 20 20"><path d="M3.5 5.5h13M8 5.5V3.7h4v1.8m-6.8 0 .8 11h7.9l.8-11M8.2 8.5v5.4m3.6-5.4v5.4"/></svg><span>Move to Trash</span><kbd id="selectedCount">0</kbd></button>
+    </section>
+    <section class="summary-strip">
+      <div class="summary-main"><div class="eyebrow">POTENTIAL SPACE RECOVERY</div><div class="big-metric" id="recoverable">— <small>GB</small></div><div class="metric-note" id="summaryNote">Scan to discover reclaimable space</div></div>
+      <div class="metric"><span class="metric-icon blue">▤</span><div><strong id="fileCount">—</strong><small>FILES FOUND</small></div></div>
+      <div class="metric"><span class="metric-icon green">◉</span><div><strong id="locationCount">—</strong><small>LOCATIONS SCANNED</small></div></div>
+      <div class="metric last"><div class="eyebrow">SPACE BY CATEGORY</div><div class="category-bar" id="categoryBar"><i></i></div><div class="bar-legend" id="barLegend">Waiting for scan</div></div>
+    </section>
+    <div class="scan-progress" id="progress"><div></div></div>
+    <div class="warning-line" id="warningLine" hidden></div>
+    <section class="workspace-grid">
+      <aside class="sidebar">
+        <div class="pane-heading"><span>SCAN LOCATIONS</span><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></div>
+        <div class="tree-list" id="categoryTree">
+          <button class="tree-item active" data-category="all"><span class="tree-chevron">⌄</span><span class="drive-icon">▣</span><span class="tree-name">All findings</span><span class="tree-size">—</span></button>
+          <div class="tree-children" id="treeChildren"><div class="tree-empty">Your scan results will appear here.</div></div>
+        </div>
+        <div class="sidebar-bottom"><div class="info-card"><span class="shield">◆</span><div><strong>Safety first</strong><p>Only cache files start selected. Histories, configs, generated outputs, and model weights need your explicit selection.</p></div></div><div class="ignore-note"><span class="ignore-dot"></span><span><b>.aicleanignore</b> rules are respected</span></div></div>
+      </aside>
+      <section class="results-area">
+        <div class="results-top"><div><div class="section-title" id="resultTitle">File findings <span id="filterBadge">ALL</span></div><div class="sub-title" id="resultSubtitle">Largest items appear first</div></div><div class="table-actions"><label class="searchbox"><svg viewBox="0 0 20 20"><circle cx="8.7" cy="8.7" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" placeholder="Filter files…" /></label><button class="view-toggle active" title="Details view">☷</button></div></div>
+        <div class="table-wrap"><table><thead><tr><th class="check-col"><input type="checkbox" id="selectVisible" aria-label="Select visible files" /></th><th class="name-head">NAME <button class="sort" id="sortName">↕</button></th><th class="size-head" id="sortSize">SIZE <span>↓</span></th><th class="date-head">LAST MODIFIED</th><th class="category-head">CATEGORY</th></tr></thead><tbody id="fileRows"><tr class="empty-state"><td colspan="5"><div class="empty-icon">⌕</div><strong>Ready when you are</strong><p>Scan known AI app locations, or add a project folder above.</p><button class="text-button" id="emptyScan">Start a scan →</button></td></tr></tbody></table></div>
+        <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-hint">Select files to move them to Trash</span></div>
+        <div class="treemap-head"><div><span class="section-title">SPACE MAP</span><span class="sub-title">Each block represents a file · larger blocks use more space</span></div><div class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></div></div>
+        <div class="treemap" id="treemap"><div class="map-empty">Run a scan to visualize space usage</div></div>
+      </section>
+    </section>
+    <footer class="statusbar"><span><i class="status-light"></i><span id="statusText">Ready</span></span><span>Non-destructive by default <b>·</b> v0.1.0</span></footer>
+  </main>
+  <dialog id="confirmDialog"><form method="dialog"><div class="dialog-icon">♲</div><h2>Move selected items to Trash?</h2><p id="confirmText">The selected files will be moved to your operating system’s Trash. You can restore them later.</p><div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="confirmTrash" value="confirm">Move to Trash</button></div></form></dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
