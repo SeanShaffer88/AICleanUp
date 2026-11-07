@@ -21,6 +21,7 @@
       <label class="check-option"><input type="checkbox" id="includeModels" /><span class="fake-check"></span> Include model weights</label>
       <div class="toolbar-spacer"></div>
       <button class="toolbar-btn" id="refreshBtn" title="Rescan known locations"><svg viewBox="0 0 20 20"><path d="M16.5 8a6.7 6.7 0 1 0 .2 3M16.5 3.7V8h-4.3"/></svg><span>Rescan</span></button>
+      <button class="toolbar-btn" id="restoreBtn" disabled title="Restore files from the last cleanup manifest"><svg viewBox="0 0 20 20"><path d="M3.5 12a6.7 6.7 0 1 0-.2-3M3.5 16.3V12h4.3"/></svg><span>Undo last cleanup</span></button>
       <button class="clean-btn" id="cleanBtn" disabled><svg viewBox="0 0 20 20"><path d="M3.5 5.5h13M8 5.5V3.7h4v1.8m-6.8 0 .8 11h7.9l.8-11M8.2 8.5v5.4m3.6-5.4v5.4"/></svg><span>Move to Trash</span><kbd id="selectedCount">0</kbd></button>
     </section>
     <section class="summary-strip">
@@ -43,7 +44,7 @@
       <section class="results-area">
         <div class="results-top"><div><div class="section-title" id="resultTitle">File findings <span id="filterBadge">ALL</span></div><div class="sub-title" id="resultSubtitle">Largest items appear first</div></div><div class="table-actions"><label class="searchbox"><svg viewBox="0 0 20 20"><circle cx="8.7" cy="8.7" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" placeholder="Filter files…" /></label><button class="toolbar-btn duplicate-btn" id="duplicatesBtn" disabled title="Hash model files to find byte-identical copies">⧉ <span>Find duplicates</span></button><button class="view-toggle active" title="Details view">☷</button></div></div>
         <div class="table-wrap"><table><thead><tr><th class="check-col"><input type="checkbox" id="selectVisible" aria-label="Select visible files" /></th><th class="name-head">NAME <button class="sort" id="sortName">↕</button></th><th class="size-head" id="sortSize">SIZE <span>↓</span></th><th class="date-head">LAST MODIFIED</th><th class="category-head">CATEGORY</th></tr></thead><tbody id="fileRows"><tr class="empty-state"><td colspan="5"><div class="empty-icon">⌕</div><strong>Ready when you are</strong><p>Scan known AI app locations, or add a project folder above.</p><button class="text-button" id="emptyScan">Start a scan →</button></td></tr></tbody></table></div>
-        <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-hint">Select files to move them to Trash</span></div>
+        <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-hint">Moved files stay restorable from the audit manifest</span></div>
         <div class="treemap-head"><div><span class="section-title">SPACE MAP</span><span class="sub-title">Each block represents a file · larger blocks use more space</span></div><div class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></div></div>
         <div class="treemap" id="treemap"><div class="map-empty">Run a scan to visualize space usage</div></div>
       </section>

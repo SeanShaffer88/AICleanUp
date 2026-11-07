@@ -172,7 +172,7 @@ class HandlerRequestTests(unittest.TestCase):
 
             def fake_trash(path):
                 shutil.move(str(path), str(moved_to))
-                return "system trash"
+                return {"route": "system trash", "destination": str(moved_to)}
 
             with patch.dict(aicleanup.state.findings, {item_id: item}, clear=True), \
                     patch.object(aicleanup.Path, "home", return_value=base / "home"), \
@@ -191,7 +191,97 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(len(result["moved"]), 1)
             manifest = Path(result["audit"])
             self.assertTrue(manifest.is_file())
-            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["items"][0]["path"], str(source))
+            entry = json.loads(manifest.read_text(encoding="utf-8"))["items"][0]
+            self.assertEqual(entry["path"], str(source))
+            self.assertEqual(entry["destination"], str(moved_to))
+
+    def test_restore_endpoint_returns_files_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            home, root = base / "home", base / "workspace"
+            root.mkdir()
+            source = root / "cache.db"
+            source.write_text("cache", encoding="utf-8")
+            old = time.time() - 8 * 86400
+            os.utime(source, (old, old))
+            trashed = base / "trash" / source.name
+            item_id = "restore-item"
+            item = {"id": item_id, "path": str(source), "root": str(root), "size": 5, "category": "Caches",
+                    "cleanup_action": "trash", "risk": "safe", "can_delete": True, "source": "workspace"}
+
+            def fake_trash(path):
+                trashed.parent.mkdir(exist_ok=True)
+                shutil.move(str(path), str(trashed))
+                return {"route": "system trash", "destination": str(trashed)}
+
+            with patch.dict(aicleanup.state.findings, {item_id: item}, clear=True), \
+                    patch.object(aicleanup.Path, "home", return_value=home), \
+                    patch.object(aicleanup, "trash_path", side_effect=fake_trash), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=[]), \
+                    patch.object(aicleanup, "open_file_index", return_value={}):
+                req = urllib.request.Request(
+                    self.url + "/api/trash", data=json.dumps({"ids": [item_id]}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    cleanup = json.load(response)
+                manifest_name = Path(cleanup["audit"]).name
+
+                with urllib.request.urlopen(self.url + "/api/audits", timeout=5) as response:
+                    audits = json.load(response)["audits"]
+                self.assertEqual(audits[0]["name"], manifest_name)
+                self.assertEqual(audits[0]["restorable"], 1)
+
+                req = urllib.request.Request(
+                    self.url + "/api/restore", data=json.dumps({"audit": manifest_name}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    restored = json.load(response)
+                self.assertTrue(source.exists())
+                self.assertFalse(trashed.exists())
+                self.assertEqual(restored["restored"][0]["path"], str(source))
+                self.assertEqual(source.read_text(encoding="utf-8"), "cache")
+                self.assertTrue(Path(restored["restore_log"]).is_file())
+
+                # Trash it again, then block the restore because the path is occupied.
+                shutil.move(str(source), str(trashed))
+                source.write_text("new file", encoding="utf-8")
+                req = urllib.request.Request(
+                    self.url + "/api/restore", data=json.dumps({"audit": manifest_name}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    blocked = json.load(response)
+            self.assertEqual(blocked["restored"], [])
+            self.assertIn("already exists", blocked["errors"][0]["error"])
+            self.assertEqual(source.read_text(encoding="utf-8"), "new file")
+            self.assertTrue(trashed.exists())
+
+    def test_restore_rejects_unknown_or_foreign_manifests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            (home / ".aicleanup" / "audit").mkdir(parents=True)
+            (home / "outside").mkdir()
+            foreign = home / "outside" / "cleanup_audit_20200101_000000_000000.json"
+            foreign.write_text('{"items": []}', encoding="utf-8")
+            for value in ("../outside/cleanup_audit_20200101_000000_000000.json", str(foreign), "missing.json"):
+                req = urllib.request.Request(
+                    self.url + "/api/restore", data=json.dumps({"audit": value}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+                )
+                with patch.object(aicleanup.Path, "home", return_value=home):
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(error.exception.code, 400)
+
+            req = urllib.request.Request(
+                self.url + "/api/restore", data=json.dumps({"audit": 5}).encode(),
+                headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(error.exception.code, 400)
 
 
 if __name__ == "__main__":
