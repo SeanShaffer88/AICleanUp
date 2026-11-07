@@ -17,13 +17,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from runtime_support import (
+    exact_model_duplicates, extend_runtime_targets, is_model_weight_path, is_ollama_partial, ollama_model_items,
+    open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
+)
+
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "web"
 MAX_FILES = 150_000
 MAX_REQUEST_BYTES = 1_048_576
+MIN_CLEANUP_AGE_SECONDS = 7 * 86400
 MODEL_PATTERNS = ("*.gguf", "*.safetensors", "*.safetensor", "*.ckpt", "*.pth", "*.pt", "*.bin")
 CACHE_DIR_NAMES = {".cache", "cache", "caches", "code cache", "codecache", "gpu cache", "gpucache", "shader cache", "shadercache", "http cache", "httpcache", "inetcache", "webcache", "application cache"}
-SENSITIVE_NAMES = {".env", ".env.local", "credentials", "credentials.json", "token", "tokens", "auth.json", "secrets.json", "id_rsa", "id_ed25519"}
+SENSITIVE_NAMES = {".env", ".env.local", "credentials", "credentials.json", ".credentials.json", "token", "tokens", "auth.json", "secrets.json", "settings.json", "mcp.json", "config.json", "config.toml", "claude_desktop_config.json", "id_rsa", "id_ed25519"}
+SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
 
 
 def known_targets():
@@ -32,10 +39,11 @@ def known_targets():
     system = platform.system()
     targets = []
 
-    def add(label, category, path, models=False):
+    def add(label, category, path, models=False, runtime=None, scan_partials=False):
         p = Path(path).expanduser()
         if p.exists() and p.is_dir():
-            targets.append({"label": label, "category": category, "path": p, "models": models})
+            targets.append({"label": label, "category": category, "path": p, "models": models,
+                            "runtime": runtime, "scan_partials": scan_partials})
 
     if system == "Windows":
         roaming = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
@@ -97,9 +105,7 @@ def known_targets():
     add("Claude Code", "Developer tools", home / ".claude")
     add("Claude Code legacy", "Developer tools", home / ".claude-code")
     add("Replit CLI", "Developer tools", home / ".replit")
-    add("Ollama models", "Model weights", home / ".ollama/models", True)
-    add("Hugging Face models", "Model weights", home / ".cache/huggingface/hub", True)
-    add("LM Studio models", "Model weights", home / ".lmstudio/models", True)
+    extend_runtime_targets(home, system, add)
     # Deduplicate paths while preserving category metadata.
     unique, seen = [], set()
     for item in targets:
@@ -126,16 +132,18 @@ def ignored(path: Path, patterns, root: Path):
         rel = path.relative_to(root).as_posix()
     except ValueError:
         rel = path.name
-    parts = set(path.parts)
-    if any(part in {".git", "node_modules", ".venv", "venv", "__pycache__"} for part in parts):
+    if any(part.casefold() in {".git", "node_modules", ".venv", "venv", "__pycache__"} for part in path.parts):
         return True
-    if path.name.lower() in SENSITIVE_NAMES or path.name.lower() == ".aicleanignore" or path.name.lower().startswith(("id_rsa", "id_ed25519")):
+    name = path.name.casefold()
+    if name in SENSITIVE_NAMES or name == ".aicleanignore" or name.endswith(SENSITIVE_SUFFIXES) or name.startswith(("id_rsa", "id_ed25519")):
         return True
     return any(fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
 
 
 def category_for(path: Path, target_category: str, workspace=False):
     directory_parts = [part.casefold().replace("_", " ").strip() for part in path.parts[:-1]]
+    if is_model_weight_path(path):
+        return "Model weights"
     if workspace:
         if any(x in path.parts for x in (".ai_scratch", "tmp_gen")):
             return "Superseded outputs"
@@ -157,6 +165,9 @@ def version_key(path: Path):
 
 def scan(roots, include_models=False):
     findings, warnings, total_seen = [], [], 0
+    processes = running_ai_processes()
+    if processes is None:
+        warnings.append("Process checks are unavailable; destructive actions will be disabled until dependencies are installed.")
     seen_paths = set()
     stop_scan = False
     # Give an explicitly selected workspace first claim on overlapping paths so
@@ -167,7 +178,9 @@ def scan(roots, include_models=False):
             break
         label = entry["label"]
         is_model = entry.get("models", False)
-        if is_model and not include_models:
+        partial_scan = entry.get("scan_partials", False)
+        runtime = entry.get("runtime") or runtime_for_source(label)
+        if is_model and not include_models and not partial_scan:
             continue
         try:
             root = Path(entry["path"]).resolve(strict=True)
@@ -181,7 +194,11 @@ def scan(roots, include_models=False):
             current_path = Path(current)
             # Do not cross symlinked or excluded directories.
             dirs[:] = [d for d in dirs if not (current_path / d).is_symlink() and not ignored(current_path / d, patterns, resolved_root)]
+            if partial_scan and not include_models:
+                dirs[:] = [d for d in dirs if d.casefold() == "blobs"] if current_path == root else []
             for filename in files:
+                if partial_scan and not include_models and not re.search(r"-partial(?:-\d+)?$", filename, re.IGNORECASE):
+                    continue
                 if total_seen >= MAX_FILES:
                     warnings.append(f"Scan stopped at {MAX_FILES:,} files for safety. Narrow the selected folder.")
                     stop_scan = True
@@ -194,9 +211,14 @@ def scan(roots, include_models=False):
                     if not stat.S_ISREG(file_stat.st_mode): continue
                     canonical_path = str(p.resolve(strict=True))
                     if canonical_path in seen_paths: continue
-                    if is_model and not any(fnmatch.fnmatch(filename.lower(), pat) for pat in MODEL_PATTERNS):
+                    partial = runtime == "ollama" and is_ollama_partial(p)
+                    if runtime == "ollama" and not partial:
+                        # Ollama blobs are shared content-addressed layers, never file-level candidates.
                         continue
-                    cat = category_for(p, entry["category"], entry.get("workspace", False))
+                    cat = "Ollama partial downloads" if partial else category_for(p, entry["category"], entry.get("workspace", False))
+                    is_weight = (is_model or cat == "Model weights") and not partial
+                    if is_weight and (not include_models or not any(fnmatch.fnmatch(filename.lower(), pat) for pat in MODEL_PATTERNS)):
+                        continue
                     # Workspace cleanup candidates are intentionally limited to known scratch / backup patterns.
                     if entry.get("workspace"):
                         scratch = any(part in {".ai_scratch", "tmp_gen"} for part in p.parts)
@@ -204,15 +226,42 @@ def scan(roots, include_models=False):
                         backup = p.suffix.lower() in {".diff", ".patch", ".bak", ".old"} or p.name.endswith("~")
                         if not (stale_scratch or backup): continue
                     if file_stat.st_size == 0: continue
+                    age_seconds = max(0, time.time() - file_stat.st_mtime)
+                    risk = "re-download" if is_weight else "safe" if cat in {"Caches", "Ollama partial downloads"} else "inspect"
+                    action = "none" if is_weight else "trash"
+                    reason = "Model files must be removed through their runtime, never as raw files." if is_weight else None
+                    if not is_weight and age_seconds < MIN_CLEANUP_AGE_SECONDS:
+                        reason = "Modified within the last 7 days; cleanup is blocked until it is older."
+                    if not is_weight and reason is None:
+                        reason = process_block_reason(runtime or label, processes)
+                    can_delete = not is_weight and reason is None
+                    guidance = None
+                    if is_weight and runtime == "huggingface":
+                        guidance = "Use `hf cache rm` or review `hf cache prune --dry-run`; raw model files are protected."
+                    elif is_weight and runtime == "lmstudio":
+                        guidance = "Remove models from LM Studio’s My Models manager."
+                    elif is_weight and runtime == "ollama":
+                        guidance = "Use `ollama rm model:tag`; shared blobs are protected."
+                    elif partial:
+                        guidance = "Orphaned partial download. Requires 7-day age and Ollama stopped."
                     findings.append({"id": uuid.uuid4().hex, "path": str(p), "name": p.name, "root": str(root),
-                                     "source": label, "category": cat, "size": file_stat.st_size,
+                                     "source": label, "runtime": runtime, "category": cat, "size": file_stat.st_size,
                                      "modified": datetime.fromtimestamp(file_stat.st_mtime).astimezone().isoformat(timespec="minutes"),
-                                     "model": bool(is_model), "selected": cat == "Caches" and not is_model})
+                                     "model": bool(is_weight), "risk": risk, "cleanup_action": action,
+                                     "can_delete": can_delete, "blocked_reason": reason, "guidance": guidance,
+                                     "selected": cat == "Caches" and can_delete})
                     seen_paths.add(canonical_path)
                 except (OSError, PermissionError):
                     continue
             if stop_scan:
                 break
+    if include_models:
+        for entry in ordered_roots:
+            if entry.get("runtime") == "ollama":
+                try:
+                    findings.extend(ollama_model_items(Path(entry["path"]).resolve(strict=True)))
+                except OSError:
+                    continue
     # Flag versioned siblings as likely historical variants; never auto-select them.
     groups = {}
     for f in findings:
@@ -286,6 +335,25 @@ def trash_path(path: Path):
     raise RuntimeError("Install the optional 'send2trash' package to use the system trash on this platform; nothing was deleted.")
 
 
+def write_audit_manifest(items):
+    if not items:
+        return None, None
+    audit_dir = Path.home() / ".aicleanup" / "audit"
+    audit_path = audit_dir / f"cleanup_audit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    temp_path = audit_path.with_suffix(".json.tmp")
+    try:
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(json.dumps({"created": datetime.now(timezone.utc).isoformat(), "items": items}, indent=2), encoding="utf-8")
+        os.replace(temp_path, audit_path)
+        return str(audit_path), None
+    except OSError as exc:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        return None, f"Items were moved, but the audit manifest could not be saved: {exc}"
+
+
 class State:
     def __init__(self): self.findings = {}; self.roots = []
 state = State()
@@ -325,7 +393,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json({"error": "Invalid scan options."}, 400)
             roots = []
             for target in known_targets():
-                if target.get("models") and not include_models: continue
+                if target.get("models") and not include_models and not target.get("scan_partials"):
+                    continue
                 roots.append(target)
             workspace = workspace.strip()
             if workspace:
@@ -336,36 +405,70 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             state.findings = {item["id"]: item for item in items}
             state.roots = roots
             return self.send_json({"items": items, "warnings": warnings, "scanned": len(roots)})
+        if parsed.path == "/api/duplicates":
+            return self.send_json({"groups": exact_model_duplicates(list(state.findings.values()))})
+        if parsed.path == "/api/ollama-remove":
+            ids = payload.get("ids", [])
+            if not isinstance(ids, list) or any(not isinstance(item_id, str) for item_id in ids):
+                return self.send_json({"error": "Item IDs must be provided as a list of strings."}, 400)
+            if not ids: return self.send_json({"error": "Select at least one Ollama model first."}, 400)
+            removed, errors = [], []
+            for item_id in ids:
+                item = state.findings.get(item_id)
+                if not item or item.get("cleanup_action") != "ollama-rm" or not item.get("model_ref"):
+                    errors.append({"path": item_id, "error": "Only manifest-backed Ollama model tags may use this action."})
+                    continue
+                try:
+                    root = Path(item["root"]).resolve(strict=True)
+                    manifest = validate_trash_candidate(Path(item["path"]), root)
+                    if manifest.relative_to(root).parts[0] != "manifests":
+                        raise RuntimeError("Only Ollama manifests are eligible for this action.")
+                    output = remove_ollama_model(item["model_ref"])
+                    removed.append({"path": str(manifest), "size": item["size"], "logical_size": item.get("logical_size", item["size"]),
+                                    "category": item["category"], "route": "ollama rm", "model": item["model_ref"], "output": output})
+                    state.findings.pop(item_id, None)
+                except Exception as exc:
+                    errors.append({"path": item.get("model_ref", item_id), "error": str(exc)})
+            audit_path, audit_error = write_audit_manifest(removed)
+            if audit_error: errors.append({"path": "audit manifest", "error": audit_error})
+            return self.send_json({"moved": removed, "errors": errors, "audit": audit_path})
         if parsed.path == "/api/trash":
             ids = payload.get("ids", [])
             if not isinstance(ids, list) or any(not isinstance(item_id, str) for item_id in ids):
                 return self.send_json({"error": "Item IDs must be provided as a list of strings."}, 400)
             if not ids: return self.send_json({"error": "Select at least one item first."}, 400)
-            audit = [] ; errors = []
+            processes, open_files = running_ai_processes(), open_file_index()
+            audit, errors = [], []
             for item_id in ids:
                 item = state.findings.get(item_id)
                 if not item: continue
                 p = Path(item["path"])
                 try:
-                    root = Path(item["root"])
-                    candidate = validate_trash_candidate(p, root)
+                    if item.get("cleanup_action") != "trash" or item.get("risk") in {"caution", "never-delete"}:
+                        raise RuntimeError(item.get("blocked_reason") or "Model files must be removed through their runtime, not file-level cleanup.")
+                    if not item.get("can_delete"):
+                        raise RuntimeError(item.get("blocked_reason") or "This item is not eligible for cleanup.")
+                    reason = process_block_reason(item.get("runtime") or item.get("source", ""), processes)
+                    if reason: raise RuntimeError(reason)
+                    if open_files is None:
+                        raise RuntimeError("Unable to verify open file handles; install requirements and retry.")
+                    opened = open_files.get(os.path.normcase(os.path.realpath(p)))
+                    if opened:
+                        raise RuntimeError(f"File is open by {opened['name']} (PID {opened['pid']}); close it first.")
+                    candidate = validate_trash_candidate(p, Path(item["root"]))
+                    metadata = os.lstat(candidate)
+                    if time.time() - metadata.st_mtime < MIN_CLEANUP_AGE_SECONDS:
+                        raise RuntimeError("File changed within the last 7 days; rescan after it becomes stale.")
+                    if item.get("category") == "Ollama partial downloads" and not is_ollama_partial(candidate):
+                        raise RuntimeError("The Ollama partial marker changed; rescan before cleanup.")
                     route = trash_path(candidate)
                     audit.append({"path": str(candidate), "size": item["size"], "category": item["category"], "route": route})
                     state.findings.pop(item_id, None)
-                except Exception as exc: errors.append({"path": item["path"], "error": str(exc)})
-            audit_path = None
-            if audit:
-                audit_dir = Path.home() / ".aicleanup" / "audit"
-                audit_path = audit_dir / f"cleanup_audit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
-                temp_path = audit_path.with_suffix(".json.tmp")
-                try:
-                    audit_dir.mkdir(parents=True, exist_ok=True)
-                    temp_path.write_text(json.dumps({"created": datetime.now(timezone.utc).isoformat(), "items": audit}, indent=2), encoding="utf-8")
-                    os.replace(temp_path, audit_path)
-                except OSError as exc:
-                    errors.append({"path": str(audit_path), "error": f"Items moved, but audit manifest could not be saved: {exc}"})
-                    audit_path = None
-            return self.send_json({"moved": audit, "errors": errors, "audit": str(audit_path) if audit_path else None})
+                except Exception as exc:
+                    errors.append({"path": item["path"], "error": str(exc)})
+            audit_path, audit_error = write_audit_manifest(audit)
+            if audit_error: errors.append({"path": "audit manifest", "error": audit_error})
+            return self.send_json({"moved": audit, "errors": errors, "audit": audit_path})
         return self.send_json({"error": "Not found"}, 404)
 
 

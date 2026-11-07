@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -55,6 +56,54 @@ class ScannerTests(unittest.TestCase):
             registered = {item["path"].resolve() for item in targets}
             self.assertTrue(set(p.resolve() for p in expected).issubset(registered))
 
+    def test_runtime_overrides_and_lmstudio_pointer_are_discovered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            ollama = home / "custom-ollama"
+            localai = home / "custom-localai"
+            lmstudio = home / "moved-lmstudio"
+            for path in (ollama, localai, lmstudio / "models"):
+                path.mkdir(parents=True)
+            (home / ".lmstudio-home-pointer").write_text(str(lmstudio), encoding="utf-8")
+            environment = {"OLLAMA_MODELS": str(ollama), "LOCALAI_MODELS_PATH": str(localai)}
+            with patch("aicleanup.platform.system", return_value="Linux"), \
+                    patch.object(Path, "home", return_value=home), patch.dict(os.environ, environment, clear=False):
+                targets = aicleanup.known_targets()
+            runtime_paths = {item.get("runtime"): item["path"].resolve() for item in targets}
+            self.assertEqual(runtime_paths["ollama"], ollama.resolve())
+            self.assertEqual(runtime_paths["localai"], localai.resolve())
+            self.assertIn((lmstudio / "models").resolve(), {item["path"].resolve() for item in targets})
+
+    def test_ollama_partial_cleanup_excludes_raw_blobs_and_uses_manifests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "models"
+            partial = root / "blobs" / "sha256-deadbeef-partial-2"
+            raw_blob = root / "blobs" / "sha256-aabbccdd"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"partial download")
+            raw_blob.write_bytes(b"shared model layer")
+            old = time.time() - 8 * 86400
+            os.utime(partial, (old, old))
+            manifest_path = root / "manifests/registry.ollama.ai/library/llama3.1/8b"
+            manifest_path.parent.mkdir(parents=True)
+            shared_manifest = {"config":{"digest":"sha256:config","size":6},"layers":[{"digest":"sha256:layer","size":10}]}
+            manifest_path.write_text(json.dumps(shared_manifest), encoding="utf-8")
+            shared_tag = manifest_path.parent / "latest"
+            shared_tag.write_text(json.dumps(shared_manifest), encoding="utf-8")
+            target = {"label":"Ollama models", "category":"Model weights", "path":root, "models":True, "runtime":"ollama", "scan_partials":True}
+            with patch.object(aicleanup, "running_ai_processes", return_value=[]):
+                partials, _ = aicleanup.scan([target], include_models=False)
+                all_models, _ = aicleanup.scan([target], include_models=True)
+            self.assertEqual([item["name"] for item in partials], [partial.name])
+            self.assertEqual(partials[0]["category"], "Ollama partial downloads")
+            self.assertFalse(partials[0]["selected"])
+            self.assertTrue(partials[0]["can_delete"])
+            model_item = next(item for item in all_models if item.get("model_ref") == "llama3.1:8b")
+            self.assertEqual(model_item["size"], 0)
+            self.assertEqual(model_item["logical_size"], 16)
+            self.assertEqual(model_item["cleanup_action"], "ollama-rm")
+            self.assertFalse(any(item["name"] == raw_blob.name for item in all_models))
+
     def test_localcache_ancestor_does_not_mark_all_client_data_as_cache(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "LocalCache" / "Roaming" / "ChatGPT"
@@ -65,6 +114,8 @@ class ScannerTests(unittest.TestCase):
             cache_root.mkdir()
             cache_file = cache_root / "cache.bin"
             cache_file.write_bytes(b"cache")
+            old = time.time() - 8 * 86400
+            os.utime(cache_file, (old, old))
 
             items, _ = aicleanup.scan([{"label": "ChatGPT Store", "category": "Application data", "path": root}])
             by_name = {item["name"]: item for item in items}
@@ -97,6 +148,8 @@ class ScannerTests(unittest.TestCase):
             (root / ".aicleanignore").write_text("*.keep\n", encoding="utf-8")
             for name in ("cache.db", "safe.keep", ".env"):
                 (root / name).write_text("data", encoding="utf-8")
+            old = time.time() - 8 * 86400
+            os.utime(root / "cache.db", (old, old))
             items, _ = aicleanup.scan([{"label": "test", "category": "Caches", "path": root}])
             self.assertEqual([item["name"] for item in items], ["cache.db"])
             self.assertTrue(items[0]["selected"])
@@ -126,6 +179,9 @@ class ScannerTests(unittest.TestCase):
             items, _ = aicleanup.scan([target], include_models=True)
             self.assertEqual(len(items), 1)
             self.assertFalse(items[0]["selected"])
+            self.assertEqual(items[0]["risk"], "re-download")
+            self.assertEqual(items[0]["cleanup_action"], "none")
+            self.assertFalse(items[0]["can_delete"])
 
     def test_trash_validation_requires_a_regular_file_inside_scanned_root(self):
         with tempfile.TemporaryDirectory() as temp:
