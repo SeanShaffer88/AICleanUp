@@ -122,3 +122,22 @@ table tbody tr[hidden]{display:none}
 .runtime-badge.ok{color:#7fd3a7;border-color:#2f5d47;background:#1d2f27}
 .runtime-meta{font:9px var(--mono);color:#767d86;margin-top:3px}
 .runtime-note{margin-top:5px;color:#9aa2aa;font-size:9.5px;line-height:1.5}
+
+/* v0.3 additions: scan scopes, bulk selection, space-map export */
+.scope-panel{display:flex;flex-direction:column;gap:6px;padding:10px 12px 12px;border-bottom:1px solid #32353b}
+.scope-panel select{width:100%;height:28px;background:#17191d;border:1px solid #383b42;border-radius:4px;color:#dfe3e7;font:11px var(--font);padding:0 6px;outline:none;cursor:pointer}
+.scope-panel select:focus{border-color:#4a7ba8;box-shadow:0 0 0 1px #2f567b80}
+.scope-panel select:disabled{opacity:.5;cursor:not-allowed}
+.scope-note{color:#71787f;font-size:9px;font-family:var(--mono);line-height:1.5;overflow-wrap:anywhere}
+.pane-heading-actions .icon-btn:disabled{opacity:.35;cursor:not-allowed}
+.footer-actions{display:flex;align-items:center;gap:9px;min-width:0;max-width:56%}
+.footer-action{border:1px solid #3a3e45;background:#23262b;border-radius:3px;padding:3px 7px;color:#8fc4f5;font-size:9.5px;white-space:nowrap}
+.footer-action:hover:not(:disabled){background:#2b2f36;color:#bfe0ff}
+.footer-action:disabled{opacity:.4;cursor:not-allowed;color:#8b929b}
+.footer-note{color:#8d94a0;font:9.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.map-export .toolbar-btn{height:22px;padding:0 6px;font:9px var(--mono);color:#a9b2bd}
+.map-export .toolbar-btn:hover{color:#dbe8f6;border-color:#4d545e}
+.ignore-field input{width:100%;background:#17191d;border:1px solid #3a3d44;border-radius:4px;color:#dfe3e7;font:11px var(--mono);padding:7px 8px;outline:none}
+.ignore-field input:focus{border-color:#4a7ba8;box-shadow:0 0 0 1px #2f567b80}
+.ignore-help{color:#7f868f;font-size:10px;line-height:1.5;margin:9px 0 0;font-family:var(--mono)}
+.info-btn small{color:#8fbfe8;font:8.5px var(--mono);margin-left:4px}

@@ -23,14 +23,16 @@ For a trusted reverse-proxy preview only, bind all interfaces explicitly with `-
 
 The GUI follows the dense, panel-driven layout of a disk-usage analyzer such as WizTree:
 
+- **Scan scopes** (left, top): save the current folder path and scan options under a name, then pick the scope to re-apply them and rescan. Scopes live in this browser's `localStorage` (`aicleanup.scopes`) — nothing is written to disk and nothing is scanned until you apply one. The `＋` button saves the current form, `⨯` deletes the selected scope, and applying one restores the path, the model-weights option, and the age override.
 - **Tree view** (left): a real folder hierarchy built from the scan, sized and sorted by weight, with expand/collapse. Selecting a node scopes the whole workspace to that folder; the active path stays unfolded and highlighted.
 - **Filter panel** (left): risk chips (safe, inspect, re-download, recent) with live counts, plus the category list. Filters combine with the tree scope and the search box.
 - **Results and space map** (center): sortable file list where a row click loads the inspector, double-clicking a space-map block zooms the tree to that block's folder, and the map supports wheel zoom, drag-pan, and zoom/reset controls.
+- **Bulk selection** (center, table footer): **Select eligible in view** / **Select eligible in this folder** selects every cleanup-eligible file in one pass; the folder's **Folder** panel offers the same as **Select eligible here**. Bulk selection never uses the age override — files changed in the last 7 days stay unselected and are reported as skipped, as are model weights and blocked rows. When a view mixes Trash files and `ollama rm` tags, the bulk pass takes the single action with the most bytes and says which action was left for a separate pass, so the cleanup button always acts on one uniform selection.
 - **Duplicate review** (center): after **Find duplicates**, the results switch to a grouped view built from SHA-256 matches — one header per group with the hash prefix, copy count, per-copy size and total duplicated bytes, then each copy with its owner. Group rows jump back to the file list, and CSV/JSON export write the whole report. Nothing is deleted or linked from this view: weights stay under their runtime manager.
 - **Model runtimes** (right): each runtime that owns model files, with its model count, total size, store paths, whether its management CLI is on `PATH` (`ollama`, `hf`), and the exact way to manage it — `ollama rm`, LM Studio's *My Models*, `hf cache rm` / `hf cache prune --dry-run`, and so on. Clicking a runtime scopes the list to it; clicking again clears the scope.
 - **Inspector** (right): **Selected item** (node info: size, modified, category, risk, owner/runtime, eligibility, guidance, and quick actions), **Folder** (branch info: findings, total size, share of scan, cleanup-eligible bytes, largest children), and **Statistics** for the current view.
 - **Ignore rules**: the `.ignore` button in the tree pane edits a scanned folder's own `.aicleanignore` — pick the folder, review or change the patterns, and save. Saving is atomic, replaces only that file, refuses symlinked ignore files, caps the list at 200 lines, and rescans automatically. Clearing the list deletes the file so default scanning resumes.
-- **Export**: the CSV and JSON buttons download the current filtered view, including category, risk, runtime, eligibility, and any blocked reason.
+- **Export**: the CSV and JSON buttons download the current filtered view, including category, risk, runtime, eligibility, and any blocked reason. **PNG** and **PDF** in the space-map header save the map itself — a squarified treemap of the largest 150 files in the current view, with a title, category legend, sizes, active filters, and a timestamp. The PDF is drawn as vector rectangles and text by a small built-in writer, so it needs no extra dependency and stays crisp at any zoom.
 
 Press `/` to jump to the search box. Moved files remain restorable, so the workspace never becomes a one-way door.
 
@@ -84,12 +86,14 @@ Entries without a recorded location (for example files the OS Recycle Bin does n
 
 ## Optional UI checks
 
-The behavior of the workspace (tree, filters, inspector, zoom, export) has a browser-less smoke test powered by jsdom:
+The behavior of the workspace (tree, filters, inspector, zoom, CSV/JSON/PNG/PDF export, duplicate review, scan scopes, and bulk selection) has a browser-less smoke test powered by jsdom:
 
 ```bash
 npm install
 npm run test:ui
 ```
+
+The PNG and PDF exports are also checked by eye during review: the PNG is drawn from the same treemap geometry as the PDF, and the PDF is a single vector page that any reader opens without embedded fonts.
 
 ## CLI dry run
 
