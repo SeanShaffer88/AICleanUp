@@ -10,13 +10,13 @@ Requires Python 3.9 or newer. From this folder:
 python3 aicleanup.py --gui
 ```
 
-The interface opens at `http://127.0.0.1:8765`. To use a different port:
+The interface opens at `http://127.0.0.1:8765`. The server binds to loopback by default so other devices cannot access the scanner. To use a different port:
 
 ```bash
 python3 aicleanup.py --gui --port 8766
 ```
 
-The server binds on all interfaces so it can be used through a development preview proxy. Do not expose the port to an untrusted network. Scanning and cleanup run locally; no file listing is uploaded.
+For a trusted reverse-proxy preview only, bind all interfaces explicitly with `--host 0.0.0.0`. Do not expose the port to an untrusted network. The API rejects cross-origin write requests and oversized request bodies. Scanning and cleanup run locally; no file listing is uploaded.
 
 ## Scan
 
