@@ -25,7 +25,7 @@ from runtime_support import (
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 # PyInstaller repoints __file__ at the unpacked bundle, so the bundled web/
 # folder is found the same way whether the app runs from source or an installer.

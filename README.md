@@ -21,12 +21,12 @@ The interface opens at `http://127.0.0.1:8765`. The editable install (`-e`) mean
 
 ## Install a release
 
-Version 1.0.1 ships as ready-to-run builds on the [releases page](https://github.com/SeanShaffer88/AICleanUp/releases). Nothing needs Python, and no build runs as a service or keeps a background process.
+Version 1.0.2 ships as ready-to-run builds on the [releases page](https://github.com/SeanShaffer88/AICleanUp/releases). Nothing needs Python, and no build runs as a service or keeps a background process.
 
-- **Windows installer** — `AICleanUp-Setup-1.0.1.exe`. Installs per user (no administrator prompt, nothing written to `Program Files`), adds a Start Menu entry, offers a desktop shortcut, and uninstalls cleanly.
-- **Windows portable** — `AICleanUp-1.0.1-windows-x64-portable.zip`. Unzip anywhere and run `AICleanUp.exe`.
-- **Linux portable** — `AICleanUp-1.0.1-linux-x64-portable.zip`. Unzip, `chmod +x AICleanUp` if the bit was lost, then run it.
-- **macOS portable** — `AICleanUp-1.0.1-macos-arm64-portable.zip` on Apple silicon (the name carries the architecture: `-macos-x64-` for an Intel build). Unzip and run `./AICleanUp`.
+- **Windows installer** — `AICleanUp-Setup-1.0.2.exe`. Installs per user (no administrator prompt, nothing written to `Program Files`), adds a Start Menu entry, offers a desktop shortcut, and uninstalls cleanly.
+- **Windows portable** — `AICleanUp-1.0.2-windows-x64-portable.zip`. Unzip anywhere and run `AICleanUp.exe`.
+- **Linux portable** — `AICleanUp-1.0.2-linux-x64-portable.zip`. Unzip, `chmod +x AICleanUp` if the bit was lost, then run it.
+- **macOS portable** — `AICleanUp-1.0.2-macos-arm64-portable.zip` on Apple silicon (the name carries the architecture: `-macos-x64-` for an Intel build). Unzip and run `./AICleanUp`.
 - **`SHA256SUMS.txt`** — hashes for every artifact above, so a download can be verified before it is run.
 
 Each portable zip contains `START-HERE.txt`, `LICENSE`, and the readme. Double-clicking the executable opens the workspace at `http://127.0.0.1:8765`; deleting the folder removes the app and nothing else.
@@ -170,27 +170,27 @@ To build locally on the machine you are on:
 ```bash
 python3 -m pip install pyinstaller -r requirements.txt
 python3 -m PyInstaller --noconfirm --clean packaging/aicleanup.spec
-./dist/AICleanUp --version        # AICleanUp 1.0.1
+./dist/AICleanUp --version        # AICleanUp 1.0.2
 ```
 
 On Windows, wrap that output into the installer (Inno Setup 6 or newer on `PATH`):
 
 ```bat
-ISCC.exe /DAppVersion=1.0.1 packaging\aicleanup.iss
+ISCC.exe /DAppVersion=1.0.2 packaging\aicleanup.iss
 ```
 
-`ISCC` writes `dist\AICleanUp-Setup-1.0.1.exe`. To stage a portable folder and zip it:
+`ISCC` writes `dist\AICleanUp-Setup-1.0.2.exe`. To stage a portable folder and zip it:
 
 ```bash
 mkdir -p package && cp dist/AICleanUp* LICENSE README.md package/
-python3 packaging/make_archive.py package AICleanUp-1.0.1-linux-x64-portable.zip
+python3 packaging/make_archive.py package AICleanUp-1.0.2-linux-x64-portable.zip
 ```
 
 Tagging cuts the whole release: `.github/workflows/release.yml` runs the test suite, then builds on Windows, Linux, and macOS, attaches every artifact to the release for that tag, and publishes `SHA256SUMS.txt` last. To publish a version:
 
 ```bash
-git tag -a v1.0.1 -m "AICleanUp 1.0.1"
-git push origin v1.0.1
+git tag -a v1.0.2 -m "AICleanUp 1.0.2"
+git push origin v1.0.2
 ```
 
 The workflow can also be started by hand from the Actions tab with a version number, which is useful for re-running a build without moving the tag.
