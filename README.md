@@ -19,6 +19,18 @@ python3 aicleanup.py --gui --port 8766
 
 For a trusted reverse-proxy preview only, bind all interfaces explicitly with `--host 0.0.0.0`. Do not expose the port to an untrusted network. The API rejects cross-origin write requests and oversized request bodies. Scanning and cleanup run locally; no file listing is uploaded.
 
+## Workspace layout
+
+The GUI follows the dense, panel-driven layout of a disk-usage analyzer such as WizTree:
+
+- **Tree view** (left): a real folder hierarchy built from the scan, sized and sorted by weight, with expand/collapse. Selecting a node scopes the whole workspace to that folder; the active path stays unfolded and highlighted.
+- **Filter panel** (left): risk chips (safe, inspect, re-download, recent) with live counts, plus the category list. Filters combine with the tree scope and the search box.
+- **Results and space map** (center): sortable file list where a row click loads the inspector, double-clicking a space-map block zooms the tree to that block's folder, and the map supports wheel zoom, drag-pan, and zoom/reset controls.
+- **Inspector** (right): **Selected item** (node info: size, modified, category, risk, owner/runtime, eligibility, guidance, and quick actions), **Folder** (branch info: findings, total size, share of scan, cleanup-eligible bytes, largest children), and **Statistics** for the current view.
+- **Export**: the CSV and JSON buttons download the current filtered view, including category, risk, runtime, eligibility, and any blocked reason.
+
+Press `/` to jump to the search box. Moved files remain restorable, so the workspace never becomes a one-way door.
+
 ## Scan
 
 - **Scan** checks known AI-client and runtime locations in the current user's home directory.
@@ -66,6 +78,15 @@ python3 aicleanup.py --restore cleanup_audit_20260101_120000_000000.json --confi
 ```
 
 Entries without a recorded location (for example files the OS Recycle Bin does not expose) are reported so you can restore them through the system Trash, and model tags removed with `ollama rm` are re-downloaded with `ollama pull` rather than restored.
+
+## Optional UI checks
+
+The behavior of the workspace (tree, filters, inspector, zoom, export) has a browser-less smoke test powered by jsdom:
+
+```bash
+npm install
+npm run test:ui
+```
 
 ## CLI dry run
 
