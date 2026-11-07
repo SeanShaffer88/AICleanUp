@@ -4,3 +4,72 @@
 .override-option{color:#d8b06a}.override-option input:checked+.fake-check{border-color:#c08a3e;background:#a9762f;box-shadow:inset 0 0 0 2px #202329}
 
 #outputDialog{width:min(680px,92vw)}#outputDialog h2{margin-top:6px}#outputDialog .output-note{font:10px var(--mono);color:#8f959d;margin-bottom:9px;word-break:break-all}#outputDialog pre{margin:0;max-height:320px;overflow:auto;background:#17191d;border:1px solid #3a3d44;border-radius:4px;padding:11px;color:#cfd6dd;font:10px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
+
+/* ---------------------------------------------------------------- v0.2 layout
+   WizTree-style workspace: tree view + filter panel, results and space map,
+   and an inspector column with node, branch, and statistics panes. */
+.workspace-grid{grid-template-columns:248px minmax(0,1fr) 296px;gap:10px;align-items:start}
+.sidebar{min-height:0;max-height:calc(100vh - 150px);overflow:auto;scrollbar-width:thin;scrollbar-color:#484c54 #202227;display:flex;flex-direction:column}
+.tree-scroll{overflow:auto;max-height:44vh;scrollbar-color:#484c54 #202227;scrollbar-width:thin;padding:6px 0}
+.tree-scroll .tree-list{padding:0 6px}
+.pane-heading-actions{display:flex;align-items:center;gap:6px}
+.pane-hint{font:9px var(--mono);color:#6e757e;letter-spacing:.4px}
+.folder-row{display:flex;align-items:center;gap:5px;min-height:24px;padding-right:8px;border-radius:3px;cursor:pointer;color:#b7bcc3;font-size:10.5px}
+.folder-row:hover{background:#292c32;color:#e6e9ec}
+.folder-row.active{background:#263343;color:#8cc7ff}
+.folder-row.folder-scope{border-bottom:1px solid #2d3036;border-radius:0;margin-bottom:3px;color:#d8dbe0;font-weight:500}
+.folder-toggle{width:12px;height:16px;border:0;background:none;color:#828a93;font-size:9px;cursor:pointer;padding:0;flex:0 0 auto}
+.folder-toggle.invisible{visibility:hidden}
+.folder-icon{font-size:10px;color:#7ba7d0;flex:0 0 auto}
+.folder-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-size{font:9.5px var(--mono);color:#8b939c;flex:0 0 auto}
+.filter-panel{border-bottom:1px solid #2d3036;padding:8px 8px 10px;max-height:34vh;overflow:auto;scrollbar-width:thin}
+.filter-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}
+.filter-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid #3a3e45;background:#23262b;color:#a8aeb6;border-radius:10px;padding:2px 7px;font-size:9.5px;cursor:pointer}
+.filter-chip b{font:9px var(--mono);color:#7d848d;font-weight:400}
+.filter-chip:hover{border-color:#4b515a;color:#dfe3e7}
+.filter-chip.active{background:#26394c;border-color:#3d6890;color:#9ccbff}
+.filter-chip.active b{color:#7fb3e6}
+.filter-note{padding:6px 2px 0;color:#71787f;font-size:9px;font-family:var(--mono);line-height:1.5;overflow-wrap:anywhere}
+.tree-children{padding:0}
+.tree-child{height:26px}
+.inspector{display:flex;flex-direction:column;gap:10px;min-width:0;max-height:calc(100vh - 150px);overflow:auto;scrollbar-width:thin;scrollbar-color:#484c54 #202227}
+.inspector-pane{background:#1e2025;border:1px solid #34373d;border-radius:5px;display:flex;flex-direction:column;min-width:0}
+.info-body{padding:10px 12px;font-size:10.5px;color:#a9afb7;line-height:1.55;overflow-wrap:anywhere}
+.info-empty{margin:0;color:#71787f;font-size:10px;line-height:1.6}
+.info-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:#e4e7ea;font-size:11.5px;font-weight:600;margin-bottom:8px}
+.info-path{font:9px var(--mono);color:#7c848d;line-height:1.5;display:inline-block;max-width:100%;overflow-wrap:anywhere}
+.info-muted{color:#767d86;font-size:9px}
+.info-grid{display:grid;grid-template-columns:minmax(74px,auto) 1fr;gap:3px 9px;margin:0}
+.info-grid dt{color:#767d86;font-size:9px;text-transform:uppercase;letter-spacing:.35px;padding-top:1px}
+.info-grid dd{margin:0;color:#cdd2d8;font-size:10px}
+.info-note{margin:8px 0 0;padding:6px 8px;border-left:2px solid #3f6d93;background:#1b2a36;border-radius:2px;color:#a8c6e0;font-size:9.5px}
+.info-note.warn{border-left-color:#8a6a2f;background:#2b2519;color:#e0c186}
+.info-actions{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+.info-btn{border:1px solid #3d424a;background:#262a30;color:#c6cbd1;border-radius:3px;padding:4px 7px;font-size:9.5px;cursor:pointer}
+.info-btn:hover{border-color:#4d545e;color:#eef1f4}
+.info-btn:disabled{opacity:.4;cursor:not-allowed}
+.info-list{list-style:none;margin:9px 0 0;padding:0;display:flex;flex-direction:column;gap:3px}
+.info-list li{display:flex;justify-content:space-between;gap:8px;font-size:9.5px;color:#98a0a8}
+.info-list li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.info-list li b{font:9px var(--mono);color:#c0c6cc;font-weight:400;flex:0 0 auto}
+.status-pill{border-radius:9px;padding:1px 6px;font:9px var(--mono);font-weight:400;letter-spacing:.2px}
+.status-pill.ok{background:#21382f;color:#6fd0a0}
+.status-pill.warn{background:#3d2f21;color:#e1b36f}
+.status-pill.block{background:#472a2a;color:#f28c8c}
+.file-row.active td{background:#2b3743}
+.file-row{cursor:pointer}
+.export-group{display:flex;align-items:center;gap:3px}
+.export-group .toolbar-btn{height:27px;padding:0 7px;font:9.5px var(--mono)}
+.map-controls{display:flex;align-items:center;gap:10px}
+.zoom-group{display:flex;align-items:center;gap:5px;color:#8f959d;font:9px var(--mono)}
+.zoom-group .icon-btn{width:18px;height:18px;border:1px solid #3a3e45;border-radius:3px;background:#23262b;font-size:11px;line-height:1}
+.zoom-group .icon-btn:hover{color:#cfe4f8;border-color:#4d545e}
+#zoomLabel{min-width:34px;text-align:center;color:#9aa1a9}
+.treemap{position:relative;overflow:hidden;cursor:grab;padding:0}
+.treemap.dragging{cursor:grabbing}
+.treemap-canvas{position:absolute;inset:3px;display:flex;gap:2px;transform-origin:0 0;will-change:transform}
+.treemap-canvas .map-empty{flex:1;display:grid;place-items:center}
+.map-block.active{outline:2px solid #d9ecff;outline-offset:-2px}
+@media(max-width:1220px){.workspace-grid{grid-template-columns:230px minmax(0,1fr)}.inspector{display:none}}
+@media(max-width:900px){.workspace-grid{grid-template-columns:1fr}.sidebar{display:none}.map-legend{display:none}}

@@ -25,33 +25,68 @@
       <button class="toolbar-btn" id="restoreBtn" disabled title="Restore files from the last cleanup manifest"><svg viewBox="0 0 20 20"><path d="M3.5 12a6.7 6.7 0 1 0-.2-3M3.5 16.3V12h4.3"/></svg><span>Undo last cleanup</span></button>
       <button class="clean-btn" id="cleanBtn" disabled><svg viewBox="0 0 20 20"><path d="M3.5 5.5h13M8 5.5V3.7h4v1.8m-6.8 0 .8 11h7.9l.8-11M8.2 8.5v5.4m3.6-5.4v5.4"/></svg><span>Move to Trash</span><kbd id="selectedCount">0</kbd></button>
     </section>
+
     <section class="summary-strip">
       <div class="summary-main"><div class="eyebrow">POTENTIAL SPACE RECOVERY</div><div class="big-metric" id="recoverable">— <small>GB</small></div><div class="metric-note" id="summaryNote">Scan to discover reclaimable space</div></div>
       <div class="metric"><span class="metric-icon blue">▤</span><div><strong id="fileCount">—</strong><small>FILES FOUND</small></div></div>
       <div class="metric"><span class="metric-icon green">◉</span><div><strong id="locationCount">—</strong><small>LOCATIONS SCANNED</small></div></div>
       <div class="metric last"><div class="eyebrow">SPACE BY CATEGORY</div><div class="category-bar" id="categoryBar"><i></i></div><div class="bar-legend" id="barLegend">Waiting for scan</div></div>
     </section>
+
     <div class="scan-progress" id="progress"><div></div></div>
     <div class="warning-line" id="warningLine" hidden></div>
+
     <section class="workspace-grid">
       <aside class="sidebar">
-        <div class="pane-heading"><span>SCAN LOCATIONS</span><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></div>
-        <div class="tree-list" id="categoryTree">
-          <button class="tree-item active" data-category="all"><span class="tree-chevron">⌄</span><span class="drive-icon">▣</span><span class="tree-name">All findings</span><span class="tree-size">—</span></button>
-          <div class="tree-children" id="treeChildren"><div class="tree-empty">Your scan results will appear here.</div></div>
+        <div class="pane-heading"><span>TREE VIEW</span><span class="pane-heading-actions"><button class="icon-btn" id="collapseTree" title="Collapse the folder tree">⌃</button><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></span></div>
+        <div class="tree-scroll"><div class="tree-list" id="folderTree"><div class="tree-empty">Run a scan to build the folder tree.</div></div></div>
+        <div class="pane-heading"><span>FILTER PANEL</span><button class="icon-btn" id="clearFilters" title="Clear all filters">⨯</button></div>
+        <div class="filter-panel">
+          <div class="filter-row" id="riskFilters"></div>
+          <div class="tree-children" id="treeChildren"><div class="tree-empty">Categories appear after a scan.</div></div>
+          <div class="filter-note" id="filterNote">No filters applied</div>
         </div>
         <div class="sidebar-bottom"><div class="info-card"><span class="shield">◆</span><div><strong>Safety first</strong><p>Only eligible caches start selected. Histories and configs are review-only; model weights use their runtime manager and are never trashed as raw files.</p></div></div><div class="ignore-note"><span class="ignore-dot"></span><span><b>.aicleanignore</b> rules are respected</span></div></div>
       </aside>
+
       <section class="results-area">
-        <div class="results-top"><div><div class="section-title" id="resultTitle">File findings <span id="filterBadge">ALL</span></div><div class="sub-title" id="resultSubtitle">Largest items appear first</div></div><div class="table-actions"><label class="searchbox"><svg viewBox="0 0 20 20"><circle cx="8.7" cy="8.7" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" placeholder="Filter files…" /></label><button class="toolbar-btn duplicate-btn" id="duplicatesBtn" disabled title="Hash model files to find byte-identical copies">⧉ <span>Find duplicates</span></button><button class="toolbar-btn duplicate-btn" id="hfPreviewBtn" disabled title="Run the read-only Hugging Face prune preview">⌘ <span>HF prune preview</span></button><button class="view-toggle active" title="Details view">☷</button></div></div>
+        <div class="results-top">
+          <div><div class="section-title" id="resultTitle">File findings <span id="filterBadge">ALL</span></div><div class="sub-title" id="resultSubtitle">Largest items appear first</div></div>
+          <div class="table-actions">
+            <label class="searchbox"><svg viewBox="0 0 20 20"><circle cx="8.7" cy="8.7" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" placeholder="Search files…  ( / )" /></label>
+            <button class="toolbar-btn duplicate-btn" id="duplicatesBtn" disabled title="Hash model files to find byte-identical copies">⧉ <span>Duplicates</span></button>
+            <button class="toolbar-btn duplicate-btn" id="hfPreviewBtn" disabled title="Run the read-only Hugging Face prune preview">⌘ <span>HF preview</span></button>
+            <span class="export-group"><button class="toolbar-btn" id="exportCsv" title="Export the filtered list as CSV">CSV</button><button class="toolbar-btn" id="exportJson" title="Export the filtered list as JSON">JSON</button></span>
+          </div>
+        </div>
         <div class="table-wrap"><table><thead><tr><th class="check-col"><input type="checkbox" id="selectVisible" aria-label="Select visible files" /></th><th class="name-head">NAME <button class="sort" id="sortName">↕</button></th><th class="size-head" id="sortSize">SIZE <span>↓</span></th><th class="date-head">LAST MODIFIED</th><th class="category-head">CATEGORY</th></tr></thead><tbody id="fileRows"><tr class="empty-state"><td colspan="5"><div class="empty-icon">⌕</div><strong>Ready when you are</strong><p>Scan known AI app locations, or add a project folder above.</p><button class="text-button" id="emptyScan">Start a scan →</button></td></tr></tbody></table></div>
         <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-hint">Moved files stay restorable from the audit manifest</span></div>
-        <div class="treemap-head"><div><span class="section-title">SPACE MAP</span><span class="sub-title">Each block represents a file · larger blocks use more space</span></div><div class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></div></div>
-        <div class="treemap" id="treemap"><div class="map-empty">Run a scan to visualize space usage</div></div>
+        <div class="treemap-head">
+          <div><span class="section-title">SPACE MAP</span><span class="sub-title">Each block is a file · click to inspect · double-click to zoom to its folder</span></div>
+          <div class="map-controls"><span class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></span><span class="zoom-group"><button class="icon-btn" id="zoomOut" title="Zoom out">−</button><span id="zoomLabel">100%</span><button class="icon-btn" id="zoomIn" title="Zoom in">+</button><button class="icon-btn" id="zoomReset" title="Reset zoom and pan">⟲</button></span></div>
+        </div>
+        <div class="treemap" id="treemap"><div class="treemap-canvas" id="treemapCanvas"><div class="map-empty">Run a scan to visualize space usage</div></div></div>
       </section>
+
+      <aside class="inspector">
+        <section class="inspector-pane">
+          <div class="pane-heading"><span>SELECTED ITEM</span><span class="pane-hint">NODE INFO</span></div>
+          <div class="info-body" id="nodeInfo"></div>
+        </section>
+        <section class="inspector-pane">
+          <div class="pane-heading"><span>FOLDER</span><span class="pane-hint">BRANCH INFO</span></div>
+          <div class="info-body" id="branchInfo"></div>
+        </section>
+        <section class="inspector-pane">
+          <div class="pane-heading"><span>STATISTICS</span><span class="pane-hint">CURRENT VIEW</span></div>
+          <div class="info-body" id="statsPanel"></div>
+        </section>
+      </aside>
     </section>
-    <footer class="statusbar"><span><i class="status-light"></i><span id="statusText">Ready</span></span><span>Non-destructive by default <b>·</b> v0.1.0</span></footer>
+
+    <footer class="statusbar"><span><i class="status-light"></i><span id="statusText">Ready</span></span><span>Non-destructive by default <b>·</b> v0.2.0</span></footer>
   </main>
+
   <dialog id="confirmDialog"><form method="dialog"><div class="dialog-icon">♲</div><h2>Move selected items to Trash?</h2><p id="confirmText">The selected files will be moved to your operating system’s Trash. You can restore them later.</p><div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="confirmTrash" value="confirm">Move to Trash</button></div></form></dialog>
   <dialog id="outputDialog"><form method="dialog"><h2 id="outputTitle">Read-only preview</h2><p id="outputNote" class="output-note"></p><pre id="outputText"></pre><div class="dialog-actions"><button class="cancel-btn" value="close">Close</button></div></form></dialog>
   <div class="toast" id="toast" role="status"></div>
