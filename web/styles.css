@@ -86,3 +86,26 @@
 .ignore-field textarea{resize:vertical;min-height:110px;line-height:1.6;white-space:pre;overflow:auto}
 .ignore-help{margin:9px 0 0;color:#8b929b;font-size:10px;line-height:1.55}
 .ignore-help b{color:#c3c9cf;font-weight:600}
+
+/* ---------------------------------------------------------------- duplicate review
+   Groups are read-only: model weights are never removed from here. */
+.view-group{display:flex;border:1px solid #3a3e45;border-radius:4px;overflow:hidden;height:27px}
+.view-chip{border:0;background:#20242a;color:#9aa1a9;font:9.5px var(--mono);padding:0 9px;cursor:pointer;line-height:1}
+.view-chip+.view-chip{border-left:1px solid #3a3e45}
+.view-chip:hover{color:#dfe3e7}
+.view-chip.active{background:#2b3a49;color:#a8d3ff}
+.view-chip:disabled{opacity:.42;cursor:not-allowed}
+.view-chip b{font-weight:400;color:#7d848d;margin-left:4px}
+.view-chip.active b{color:#8fc0ee}
+table tbody tr[hidden]{display:none}
+.dup-group td{background:#1b2530;border-bottom:1px solid #33414f;padding-top:7px;padding-bottom:7px}
+.dup-title{display:flex;align-items:center;gap:7px;color:#dfe5ea;font-size:11px;font-weight:600}
+.dup-hash{font:9px var(--mono);color:#8fb6d8;background:#22303d;border:1px solid #35485a;border-radius:3px;padding:1px 5px}
+.dup-count{font:600 10px var(--mono);color:#a8d3ff;text-align:center}
+.dup-wasted{font:8.5px var(--mono);color:#8b939c;margin-top:2px;text-transform:uppercase;letter-spacing:.3px}
+.dup-member td{background:#191b1f;color:#b5bbc2;font-size:10px}
+.dup-member:hover td{background:#22262c}
+.dup-member.active td{background:#2b3743}
+.dup-member .file-name{font-size:10.5px;color:#d3d8dd}
+.dup-member .file-path{font-size:8.5px}
+.dup-show{white-space:nowrap}
