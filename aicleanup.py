@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from runtime_support import (
     exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
+    runtime_inventory,
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
 
@@ -600,6 +601,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json({"targets": targets})
         if parsed.path == "/api/state":
             return self.send_json({"items": list(state.findings.values()), "warnings": []})
+        if parsed.path == "/api/runtimes":
+            return self.send_json({"runtimes": runtime_inventory(list(state.findings.values()))})
         if parsed.path == "/api/audits":
             return self.send_json({"audits": list_audit_manifests()})
         if parsed.path == "/api/ignore":

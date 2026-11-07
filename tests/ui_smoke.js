@@ -45,6 +45,10 @@ window.fetch = async (url, options = {}) => {
   if (url === '/api/scan') return reply({ items: JSON.parse(JSON.stringify(fixtures)), warnings: [], scanned: 2 });
   if (url === '/api/audits') return reply({ audits: [{ name: 'cleanup_audit_x.json', created: new Date().toISOString(), items: 3, restorable: 2 }] });
   if (url === '/api/duplicates') return reply({ groups: [duplicateGroup] });
+  if (url === '/api/runtimes') return reply({ runtimes: [
+    { runtime: 'huggingface', models: 1, bytes: 4096, stores: ['/home/u/.cache/hf/hub'], cli: 'hf', management: 'Use `hf cache rm` or review `hf cache prune --dry-run`.' },
+    { runtime: 'ollama', models: 1, bytes: 1024, stores: ['/home/u/.ollama/models'], cli: null, management: 'Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.' },
+  ] });
   if (url === '/api/hf-prune-preview') return reply({ command: 'hf cache prune --dry-run', output: 'Would free 1G', dry_run: true, warnings: '' });
   if (typeof url === 'string' && url.startsWith('/api/ignore')) {
     if (url.startsWith('/api/ignore?')) {
@@ -129,6 +133,22 @@ setTimeout(async () => {
     check('JSON export records the filters', parsed.count === fixtures.length && 'filters' in parsed);
   }
   check('toast reports the export', $('#toast').textContent.includes('Exported'), $('#toast').textContent);
+
+  // runtime inventory
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check('runtime panel lists each runtime', $$('#runtimePanel .runtime-row').length === 2, $$('#runtimePanel .runtime-row').length);
+  check('runtime panel marks the detected CLI', $('#runtimePanel .runtime-badge.ok').textContent.includes('hf found'));
+  check('runtime panel shows a missing CLI', $$('#runtimePanel .runtime-badge').some(b => b.textContent === 'no CLI'));
+  check('runtime panel shows store size', $('#runtimePanel .runtime-row .runtime-size').textContent === '4.0 KB', $('#runtimePanel .runtime-row .runtime-size').textContent);
+  check('runtime panel explains management', $('#runtimePanel').textContent.includes('ollama rm'));
+  const hfRow = $$('#runtimePanel .runtime-row').find(row => row.dataset.runtime === 'huggingface');
+  click(hfRow);
+  check('runtime row filters the file list', $$('#fileRows .file-row').length === 2, $$('#fileRows .file-row').length);
+  check('runtime filter hides other runtimes', !$$('#fileRows .file-row').some(row => row.dataset.id === 'c'));
+  check('runtime filter is described', $('#resultSubtitle').textContent.includes('huggingface models'), $('#resultSubtitle').textContent);
+  check('runtime row shows as active', $$('#runtimePanel .runtime-row.active').length === 1);
+  click($$('#runtimePanel .runtime-row').find(row => row.dataset.runtime === 'huggingface'));
+  check('clicking the active runtime clears the filter', $$('#fileRows .file-row').length === fixtures.length, $$('#fileRows .file-row').length);
 
   // duplicate review view
   check('duplicate view starts disabled', $$('#viewDuplicates').length === 1);

@@ -3,10 +3,10 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 const state = {
   items: [], locations: 0,
-  category: 'all', risk: 'all', folder: null, query: '',
+  category: 'all', risk: 'all', folder: null, runtime: null, query: '',
   sort: 'size', descending: true, busy: false,
   audits: [], overrideRecent: false,
-  selectedId: null, duplicateGroups: null, view: 'files',
+  selectedId: null, duplicateGroups: null, view: 'files', runtimes: [],
   zoom: 1, panX: 0, panY: 0,
   expanded: new Set(),
 };
@@ -39,6 +39,7 @@ function filtered() {
     if (state.category !== 'all' && x.category !== state.category) return false;
     if (state.risk === 'recent') { if (!x.age_blocked) return false; }
     else if (state.risk !== 'all' && x.risk !== state.risk) return false;
+    if (state.runtime && x.runtime !== state.runtime) return false;
     if (!inFolder(x, state.folder)) return false;
     if (q && !`${x.name} ${x.path} ${x.category} ${x.source||''} ${x.runtime||''}`.toLowerCase().includes(q)) return false;
     return true;
@@ -48,6 +49,7 @@ function filtered() {
 function filterDescription() {
   const bits = [];
   if (state.folder) bits.push(`folder ${baseName(state.folder)}`);
+  if (state.runtime) bits.push(`${state.runtime} models`);
   if (state.category !== 'all') bits.push(state.category);
   if (state.risk !== 'all') bits.push(state.risk === 'recent' ? 'recent only' : `${state.risk} risk`);
   if (state.query.trim()) bits.push(`“${state.query.trim()}”`);
@@ -342,6 +344,34 @@ function renderBranchInfo() {
     ${largest.length?`<ul class="info-list">${largest.map(i=>`<li title="${esc(i.path)}"><span>${esc(i.name)}</span><b>${bytes(i.size)}</b></li>`).join('')}</ul>`:''}`;
 }
 
+function renderRuntimes() {
+  const host = $('#runtimePanel');
+  const runtimes = state.runtimes;
+  if (!runtimes.length) {
+    host.innerHTML = '<p class="info-empty">Enable <b>Include model weights</b> and scan to inventory local model runtimes and their management commands.</p>';
+    return;
+  }
+  host.innerHTML = runtimes.map(entry => {
+    const active = state.runtime === entry.runtime;
+    const cli = entry.cli
+      ? `<span class="runtime-badge ok">${esc(entry.cli)} found</span>`
+      : '<span class="runtime-badge">no CLI</span>';
+    const store = entry.stores[0] || '';
+    const extra = entry.stores.length > 1 ? ` <span class="info-muted">+${entry.stores.length - 1} more</span>` : '';
+    return `<div class="runtime-row ${active ? 'active' : ''}" data-runtime="${esc(entry.runtime)}" title="${esc(entry.stores.join(' '))}">
+        <div class="runtime-head"><span class="runtime-name">${esc(entry.runtime)}</span>${cli}<span class="runtime-size">${bytes(entry.bytes)}</span></div>
+        <div class="runtime-meta">${entry.models.toLocaleString()} model file${entry.models === 1 ? '' : 's'} · ${entry.stores.length} store${entry.stores.length === 1 ? '' : 's'}</div>
+        ${store ? `<div class="info-path">${esc(store)}${extra}</div>` : ''}
+        <div class="runtime-note">${esc(entry.management)}</div>
+      </div>`;
+  }).join('');
+  $$('#runtimePanel .runtime-row').forEach(row => row.addEventListener('click', () => {
+    state.runtime = state.runtime === row.dataset.runtime ? null : row.dataset.runtime;
+    state.view = 'files';
+    render();
+  }));
+}
+
 function renderStats() {
   const host = $('#statsPanel');
   const all = state.items;
@@ -430,6 +460,7 @@ function render() {
   renderMap();
   renderNodeInfo();
   renderBranchInfo();
+  renderRuntimes();
   renderStats();
 }
 
@@ -466,7 +497,7 @@ function scanRoots() {
 }
 
 function clearFilters() {
-  state.category = 'all'; state.risk = 'all'; state.folder = null; state.query = '';
+  state.category = 'all'; state.risk = 'all'; state.folder = null; state.runtime = null; state.query = '';
   $('#search').value = '';
   render();
 }
@@ -608,11 +639,12 @@ async function runScan() {
     if (!response.ok) throw new Error(data.error || 'Scan failed');
     state.items = data.items || [];
     state.locations = data.scanned || 0;
-    state.category = 'all'; state.risk = 'all'; state.folder = null; state.query = '';
+    state.category = 'all'; state.risk = 'all'; state.folder = null; state.runtime = null; state.query = '';
     state.selectedId = null; state.duplicateGroups = null; state.expanded = new Set(); state.view = 'files';
     $('#search').value = '';
     if (data.warnings?.length) { $('#warningLine').textContent = data.warnings.join(' '); $('#warningLine').hidden = false; }
     $('#statusText').textContent = `Scan complete · ${state.items.length.toLocaleString()} files found`;
+    await refreshRuntimes();
     render();
     toast(state.items.length ? `Scan complete — ${state.items.length.toLocaleString()} candidate files found` : 'Scan complete — no candidate files found');
   } catch (err) {
@@ -672,6 +704,15 @@ async function previewHuggingFacePrune() {
   } finally {
     setBusy(false, $('#statusText').textContent);
   }
+}
+
+async function refreshRuntimes() {
+  try {
+    const response = await fetch('/api/runtimes');
+    if (!response.ok) return;
+    const data = await response.json();
+    state.runtimes = data.runtimes || [];
+  } catch { state.runtimes = []; }
 }
 
 async function refreshAudits() {

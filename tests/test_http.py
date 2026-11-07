@@ -196,6 +196,23 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(entry["path"], str(source))
             self.assertEqual(entry["destination"], str(moved_to))
 
+    def test_runtimes_endpoint_summarizes_model_stores(self):
+        findings = {
+            "a": {"id": "a", "runtime": "ollama", "model": True, "size": 512, "root": "/m/ollama", "path": "/m/ollama/manifests/x"},
+            "b": {"id": "b", "runtime": "huggingface", "category": "Model weights", "size": 256, "root": "/m/hf", "path": "/m/hf/x.gguf"},
+            "c": {"id": "c", "runtime": "chatgpt", "category": "Caches", "size": 999, "root": "/m/chat", "path": "/m/chat/c.db"},
+        }
+        with patch.dict(aicleanup.state.findings, findings, clear=True), \
+                patch("runtime_support.shutil.which", side_effect=lambda name: "/usr/bin/hf" if name == "hf" else None):
+            with urllib.request.urlopen(self.url + "/api/runtimes", timeout=5) as response:
+                data = json.load(response)
+        runtimes = {entry["runtime"]: entry for entry in data["runtimes"]}
+        self.assertEqual(set(runtimes), {"ollama", "huggingface"})
+        self.assertEqual(runtimes["ollama"]["models"], 1)
+        self.assertEqual(runtimes["huggingface"]["cli"], "hf")
+        self.assertIsNone(runtimes["ollama"]["cli"])
+        self.assertTrue(runtimes["ollama"]["management"].startswith("Remove tags with"))
+
     def test_ignore_rules_can_be_read_and_saved_for_scanned_folders(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "cache"
