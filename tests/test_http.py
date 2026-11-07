@@ -494,5 +494,109 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 400)
 
 
+
+    def post_json(self, path, payload):
+        request = urllib.request.Request(
+            self.url + path, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Origin": self.url}, method="POST",
+        )
+        return urllib.request.urlopen(request, timeout=5)
+
+    def test_empty_dirs_endpoint_lists_and_trashes_file_free_folders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "workspace"
+            leftover = root / "cache/v/cache"
+            leftover.mkdir(parents=True)
+            kept = root / "logs"
+            kept.mkdir()
+            (kept / "app.log").write_text("log", encoding="utf-8")
+            item_id = "anchor"
+            item = {"id": item_id, "path": str(kept / "app.log"), "root": str(root), "size": 3,
+                    "category": "Caches", "cleanup_action": "trash", "risk": "safe",
+                    "can_delete": True, "source": "workspace"}
+            trashed = base / "trash"
+            trashed.mkdir()
+
+            def fake_trash(path):
+                destination = trashed / str(Path(path)).replace(str(base), "").strip("/").replace("/", "_")
+                shutil.move(str(path), str(destination))
+                return {"route": "system trash", "destination": str(destination)}
+
+            with patch.dict(aicleanup.state.findings, {item_id: item}, clear=True), \
+                    patch.object(aicleanup.state, "roots", []), \
+                    patch.object(aicleanup.Path, "home", return_value=base / "home"), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=[]), \
+                    patch.object(aicleanup, "trash_path", side_effect=fake_trash):
+                with self.post_json("/api/empty-dirs", {}) as response:
+                    listing = json.load(response)
+                self.assertEqual({entry["path"] for entry in listing["folders"]},
+                                 {str(root / "cache"), str(root / "cache/v"), str(leftover)})
+                self.assertEqual([entry["depth"] for entry in listing["folders"]], [3, 2, 1])
+                with self.post_json("/api/trash-empty-dirs", {"paths": [entry["path"] for entry in listing["folders"]]}) as response:
+                    result = json.load(response)
+
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["moved"]), 3)
+            self.assertFalse(leftover.exists())
+            self.assertFalse((root / "cache").exists())
+            self.assertTrue(kept.is_dir())
+            self.assertEqual(result["remaining"], 0)
+            manifest = json.loads(Path(result["audit"]).read_text(encoding="utf-8"))
+            self.assertEqual({entry["kind"] for entry in manifest["items"]}, {"directory"})
+            with patch.object(aicleanup.Path, "home", return_value=base / "home"):
+                restore = aicleanup.restore_manifest(Path(result["audit"]))
+            self.assertEqual(restore["restored"], [])
+            self.assertIn("not restored automatically", restore["skipped"][0]["reason"])
+
+    def test_trash_empty_dirs_refuses_folders_outside_the_scan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "workspace"
+            root.mkdir()
+            anchor = root / "app.log"
+            anchor.write_text("log", encoding="utf-8")
+            outside = base / "elsewhere/empty"
+            outside.mkdir(parents=True)
+            item = {"id": "anchor", "path": str(anchor), "root": str(root), "size": 3,
+                    "category": "Caches", "cleanup_action": "trash", "risk": "safe",
+                    "can_delete": True, "source": "workspace"}
+            with patch.dict(aicleanup.state.findings, {"anchor": item}, clear=True), \
+                    patch.object(aicleanup.state, "roots", []), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=[]), \
+                    patch.object(aicleanup, "trash_path") as trash:
+                with self.post_json("/api/trash-empty-dirs", {"paths": [str(outside)]}) as response:
+                    result = json.load(response)
+            trash.assert_not_called()
+            self.assertEqual(result["moved"], [])
+            self.assertIn("outside the scanned locations", result["errors"][0]["error"])
+            self.assertTrue(outside.is_dir())
+
+    def test_empty_dirs_endpoint_requires_a_scan(self):
+        with patch.dict(aicleanup.state.findings, {}, clear=True), \
+                patch.object(aicleanup.state, "roots", []):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.post_json("/api/empty-dirs", {})
+        self.assertEqual(error.exception.code, 400)
+        self.assertIn("Run a scan first", error.exception.read().decode())
+
+    def test_trash_empty_dirs_fails_closed_without_process_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "workspace"
+            empty = root / "leftover"
+            empty.mkdir(parents=True)
+            item = {"id": "anchor", "path": str(empty), "root": str(root), "size": 0,
+                    "category": "Caches", "cleanup_action": "trash", "risk": "safe", "can_delete": True}
+            with patch.dict(aicleanup.state.findings, {"anchor": item}, clear=True), \
+                    patch.object(aicleanup.state, "roots", []), \
+                    patch.object(aicleanup, "running_ai_processes", return_value=None):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    self.post_json("/api/trash-empty-dirs", {"paths": [str(empty)]})
+            self.assertEqual(error.exception.code, 400)
+            self.assertIn("Cannot verify running processes", error.exception.read().decode())
+            self.assertTrue(empty.is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ const state = {
   audits: [], overrideRecent: false,
   selectedId: null, duplicateGroups: null, view: 'files', runtimes: [],
   zoom: 1, panX: 0, panY: 0,
-  expanded: new Set(), scopes: [],
+  expanded: new Set(), scopes: [], emptyDirs: [],
 };
 
 const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
@@ -427,6 +427,69 @@ function setZoom(next) {
   applyTransform();
 }
 
+// ---------------------------------------------------------------- empty folders
+const EMPTY_KEEP_NOTE = 'Runtime layout folders (blobs, models, manifests, snapshots, refs, hub, checkpoints) are always kept.';
+
+function renderEmptyDirs(folders) {
+  const shown = folders.slice(0, 60);
+  $('#emptyList').innerHTML = shown.map(folder =>
+    `<li><span class="empty-path" title="${esc(folder.path)}">${esc(folder.path)}</span><small>${folder.depth} level${folder.depth === 1 ? '' : 's'} deep</small></li>`).join('')
+    + (folders.length > shown.length ? `<li class="empty-more">…and ${(folders.length - shown.length).toLocaleString()} more</li>` : '');
+}
+
+async function findEmptyDirs() {
+  if (state.busy) return;
+  setBusy(true, 'Looking for empty folders…');
+  try {
+    const response = await fetch('/api/empty-dirs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not list empty folders');
+    state.emptyDirs = data.folders || [];
+    if (!state.emptyDirs.length) {
+      $('#statusText').textContent = 'No empty folders to sweep';
+      toast('No empty folders left in the scanned locations');
+      return;
+    }
+    $('#emptyNote').textContent = `${state.emptyDirs.length.toLocaleString()} folder${state.emptyDirs.length === 1 ? '' : 's'} hold no files at all — no files, no hidden files, nothing but empty folders beneath. They move to your system Trash and the sweep is recorded in the audit manifest. ${EMPTY_KEEP_NOTE}${data.truncated ? ' Showing the first 500.' : ''}`;
+    renderEmptyDirs(state.emptyDirs);
+    $('#emptyConfirm').textContent = `Move ${state.emptyDirs.length.toLocaleString()} folder${state.emptyDirs.length === 1 ? '' : 's'} to Trash`;
+    openDialog($('#emptyDialog'));
+    $('#statusText').textContent = `${state.emptyDirs.length.toLocaleString()} empty folders found · nothing removed yet`;
+  } catch (err) {
+    toast(err.message);
+    $('#statusText').textContent = 'Empty folder check failed';
+  } finally {
+    setBusy(false, $('#statusText').textContent);
+  }
+}
+
+async function sweepEmptyDirs(event) {
+  if (event) event.preventDefault();
+  const paths = state.emptyDirs.map(folder => folder.path);
+  if (!paths.length) { closeDialog($('#emptyDialog')); return; }
+  closeDialog($('#emptyDialog'));
+  setBusy(true, 'Moving empty folders to Trash…');
+  try {
+    const response = await fetch('/api/trash-empty-dirs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not move the empty folders');
+    const moved = (data.moved || []).length;
+    state.emptyDirs = [];
+    if (data.errors?.length) {
+      $('#warningLine').textContent = `${moved} empty folder${moved === 1 ? '' : 's'} moved · ${data.errors.length} skipped — ${data.errors[0].path}: ${data.errors[0].error}`;
+      $('#warningLine').hidden = false;
+    }
+    toast(`${moved} empty folder${moved === 1 ? '' : 's'} moved to Trash · audit saved${data.remaining ? ` · ${data.remaining} still empty` : ''}`);
+    $('#statusText').textContent = `Empty folders swept · ${moved} moved${data.remaining ? ` · ${data.remaining} still empty` : ''}`;
+    $('#statusText').title = data.audit || '';
+  } catch (err) {
+    toast(err.message);
+    $('#statusText').textContent = 'Empty folder sweep failed';
+  } finally {
+    setBusy(false, $('#statusText').textContent);
+  }
+}
+
 // ---------------------------------------------------------------- space map export
 const MAP_EXPORT_LIMIT = 150;
 
@@ -826,6 +889,7 @@ function renderSummary(all, shown) {
   $('#restoreBtn').title = restorable ? `Restore ${restorable} file${restorable===1?'':'s'} from the last cleanup manifest` : 'No restorable cleanup manifest yet';
 
   $('#ignoreBtn').disabled = state.busy || !all.length;
+  $('#emptyDirsBtn').disabled = state.busy || !all.length;
   const groups = duplicateGroups();
   const duplicatesView = state.view === 'duplicates';
   $('#viewFiles').classList.toggle('active', !duplicatesView);
@@ -1037,6 +1101,7 @@ function setBusy(on, text) {
   $('#restoreBtn').disabled = on || !state.audits.some(a=>a.restorable>0);
   $('#viewDuplicates').disabled = on || !duplicateGroups().length;
   $('#ignoreBtn').disabled = on || !state.items.length;
+  $('#emptyDirsBtn').disabled = on || !state.items.length;
   $('#selectEligible').disabled = on || state.view === 'duplicates' || !filtered().some(x=>x.can_delete);
   $('#progress').classList.toggle('running', on);
   $('#statusText').textContent = text || (on ? 'Scanning…' : 'Ready');
@@ -1290,6 +1355,8 @@ $('#scopeSelect').addEventListener('change', e => applyScope(e.target.value));
 $('#scopeConfirm').addEventListener('click', commitScope);
 $('#selectEligible').addEventListener('click', () => bulkEligible());
 $('#exportMapPng').addEventListener('click', exportMapPng);
+$('#emptyDirsBtn').addEventListener('click', findEmptyDirs);
+$('#emptyConfirm').addEventListener('click', sweepEmptyDirs);
 $('#exportMapPdf').addEventListener('click', exportMapPdf);
 
 $('#treemapCanvas').addEventListener('click', e => {

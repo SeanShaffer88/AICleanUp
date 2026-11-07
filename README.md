@@ -32,6 +32,7 @@ The GUI follows the dense, panel-driven layout of a disk-usage analyzer such as 
 - **Model runtimes** (right): each runtime that owns model files, with its model count, total size, store paths, whether its management CLI is on `PATH` (`ollama`, `hf`), and the exact way to manage it — `ollama rm`, LM Studio's *My Models*, `hf cache rm` / `hf cache prune --dry-run`, and so on. Clicking a runtime scopes the list to it; clicking again clears the scope.
 - **Inspector** (right): **Selected item** (node info: size, modified, category, risk, owner/runtime, eligibility, guidance, and quick actions), **Folder** (branch info: findings, total size, share of scan, cleanup-eligible bytes, largest children), and **Statistics** for the current view.
 - **Ignore rules**: the `.ignore` button in the tree pane edits a scanned folder's own `.aicleanignore` — pick the folder, review or change the patterns, and save. Saving is atomic, replaces only that file, refuses symlinked ignore files, caps the list at 200 lines, and rescans automatically. Clearing the list deletes the file so default scanning resumes.
+- **Empty folders** (toolbar): lists folders inside the scanned locations that hold no files at all, and moves the confirmed ones to Trash with an audit entry. See [Cleanup safety](#cleanup-safety).
 - **Export**: the CSV and JSON buttons download the current filtered view, including category, risk, runtime, eligibility, and any blocked reason. **PNG** and **PDF** in the space-map header save the map itself — a squarified treemap of the largest 150 files in the current view, with a title, category legend, sizes, active filters, and a timestamp. The PDF is drawn as vector rectangles and text by a small built-in writer, so it needs no extra dependency and stays crisp at any zoom.
 
 Press `/` to jump to the search box. Moved files remain restorable, so the workspace never becomes a one-way door.
@@ -72,6 +73,18 @@ python3 -m pip install -r requirements.txt
 
 If no native trash route is available, the file is moved into an app-managed quarantine folder (`~/.aicleanup/quarantine/<timestamp>_<id>/`) instead of being deleted or refused. Every manifest entry records the original path, size, route, and the location the file was moved to, so cleanup stays reversible.
 
+### Empty folders left behind
+
+Trashing cache files often leaves the folders that held them (`.pytest_cache/v/cache`, a cleared `tmp_gen`, and so on). **Empty folders** in the toolbar lists them, and confirming moves the listed folders to the same Trash with an audit entry of `"kind": "directory"`. Reported folders are only ones that hold **no files anywhere beneath** — a folder with any file, hidden file, or symlink inside is never listed. The sweep also refuses:
+
+- anything outside the folders from the current scan, including the scan roots themselves;
+- anything that stopped being empty between listing and confirmation, or whose path changed;
+- symlinked folders;
+- runtime layout folders — `blobs`, `manifests`, `snapshots`, `refs`, `hub`, `models`, `checkpoints` — because the runtime expects those next to its content-addressed data;
+- paths matched by that folder's `.aicleanignore`.
+
+Folders are removed deepest-first, process checks fail closed if `psutil` is unavailable, and a running runtime blocks its own folders. The response reports how many folders are still empty afterwards, so a second sweep is always optional rather than automatic.
+
 ## Restore a cleanup
 
 **Undo last cleanup** in the toolbar (or the CLI below) moves files back to their original folders from the newest manifest. Restores are previewed first, never overwrite an existing file, refuse when the recorded file changed size, and write a `restore_log_*.json` manifest:
@@ -82,7 +95,7 @@ python3 aicleanup.py --restore --confirm            # apply it
 python3 aicleanup.py --restore cleanup_audit_20260101_120000_000000.json --confirm
 ```
 
-Entries without a recorded location (for example files the OS Recycle Bin does not expose) are reported so you can restore them through the system Trash, and model tags removed with `ollama rm` are re-downloaded with `ollama pull` rather than restored.
+Entries without a recorded location (for example files the OS Recycle Bin does not expose) are reported so you can restore them through the system Trash, and model tags removed with `ollama rm` are re-downloaded with `ollama pull` rather than restored. Folders from an empty-folder sweep are listed as skipped rather than restored, and they do not count toward the restorable total in **Undo last cleanup**.
 
 ## Optional UI checks
 

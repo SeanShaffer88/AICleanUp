@@ -23,6 +23,7 @@
       <div class="toolbar-spacer"></div>
       <button class="toolbar-btn" id="refreshBtn" title="Rescan known locations"><svg viewBox="0 0 20 20"><path d="M16.5 8a6.7 6.7 0 1 0 .2 3M16.5 3.7V8h-4.3"/></svg><span>Rescan</span></button>
       <button class="toolbar-btn" id="restoreBtn" disabled title="Restore files from the last cleanup manifest"><svg viewBox="0 0 20 20"><path d="M3.5 12a6.7 6.7 0 1 0-.2-3M3.5 16.3V12h4.3"/></svg><span>Undo last cleanup</span></button>
+      <button class="toolbar-btn" id="emptyDirsBtn" disabled title="Find folders inside the scanned locations that hold no files at all"><svg viewBox="0 0 20 20"><path d="M2.5 5.5h6l1.7 1.8h7.3v8.2h-15z"/></svg><span>Empty folders</span></button>
       <button class="clean-btn" id="cleanBtn" disabled><svg viewBox="0 0 20 20"><path d="M3.5 5.5h13M8 5.5V3.7h4v1.8m-6.8 0 .8 11h7.9l.8-11M8.2 8.5v5.4m3.6-5.4v5.4"/></svg><span>Move to Trash</span><kbd id="selectedCount">0</kbd></button>
     </section>
 
@@ -104,6 +105,13 @@
     <label class="ignore-field"><span>Patterns — one per line</span><textarea id="ignoreRules" rows="8" spellcheck="false" placeholder="*.tmp&#10;cache/**&#10;# comments are kept"></textarea></label>
     <p class="ignore-help">Glob patterns match a path inside the folder or a file name. Lines starting with <b>#</b> stay as comments. Clearing the list removes the file so default scanning resumes.</p>
     <div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="ignoreSave" value="save">Save rules</button></div></form></dialog>
+  <dialog id="emptyDialog"><form method="dialog">
+    <div class="dialog-icon">▤</div>
+    <h2>Empty folders left behind</h2>
+    <p class="output-note" id="emptyNote"></p>
+    <ul class="empty-list" id="emptyList"></ul>
+    <div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="emptyConfirm" value="sweep">Move to Trash</button></div>
+  </form></dialog>
   <dialog id="scopeDialog"><form method="dialog"><h2>Save scan scope</h2><p class="output-note">A scope stores the folder path and scan options in this browser only. Nothing is scanned until you apply it.</p>
     <label class="ignore-field"><span>Scope name</span><input id="scopeName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Models only" /></label>
     <p class="ignore-help" id="scopeSummary"></p>

@@ -26,6 +26,10 @@ from runtime_support import (
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "web"
 MAX_FILES = 150_000
+MAX_EMPTY_DIRS = 500
+# Runtime layout folders are never swept even when they look empty: the runtime
+# recreates them and expects them to exist next to its content-addressed data.
+KEEP_EMPTY_DIR_NAMES = {"blobs", "manifests", "snapshots", "refs", "hub", "models", "checkpoints"}
 MAX_REQUEST_BYTES = 1_048_576
 MIN_CLEANUP_AGE_SECONDS = 7 * 86400
 MODEL_PATTERNS = ("*.gguf", "*.safetensors", "*.safetensor", "*.ckpt", "*.pth", "*.pt", "*.bin")
@@ -314,19 +318,97 @@ def validate_trash_candidate(path: Path, root: Path):
     return candidate
 
 
+def validate_empty_directory(path: Path, root: Path):
+    """Recheck containment, type, and emptiness immediately before removing a folder."""
+    root_path = Path(root).resolve(strict=True)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative = candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise RuntimeError("Folder is outside the scanned locations; skipped") from exc
+    if not relative.parts:
+        raise RuntimeError("A scan root itself is never removed")
+    current = root_path
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RuntimeError("Symbolic links are not eligible for cleanup; skipped")
+    if candidate.name.casefold() in KEEP_EMPTY_DIR_NAMES:
+        raise RuntimeError("Runtime layout folders are kept even when empty; skipped")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("Folder no longer exists; skipped") from exc
+    if resolved != candidate:
+        raise RuntimeError("Folder path changed since scanning; skipped")
+    if not candidate.is_dir():
+        raise RuntimeError("Only folders can use this action; skipped")
+    try:
+        next(candidate.iterdir())
+    except StopIteration:
+        return candidate
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read that folder: {exc}") from exc
+    raise RuntimeError("Folder is no longer empty; skipped")
+
+
+def empty_directories(roots, limit=MAX_EMPTY_DIRS):
+    """Folders inside the scanned roots that hold no files at all, deepest first.
+
+    Symlinks, runtime layout folders, ignored paths, and anything holding a file
+    (at any depth) are excluded, so a sweep can never strand data.
+    """
+    folders, truncated = [], False
+    for root_value in roots:
+        try:
+            root = Path(root_value).resolve(strict=True)
+        except OSError:
+            continue
+        if not root.is_dir():
+            continue
+        patterns = load_ignore(root)
+        clean = set()
+        for current, dirs, files in os.walk(root, topdown=False, followlinks=False):
+            current_path = Path(current)
+            if files or any((current_path / name).is_symlink() for name in dirs):
+                continue
+            if not all((current_path / name) in clean for name in dirs):
+                continue
+            if current_path != root:
+                clean.add(current_path)
+        for path in sorted(clean, key=lambda entry: len(entry.parts), reverse=True):
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if not relative.parts or path.name.casefold() in KEEP_EMPTY_DIR_NAMES:
+                continue
+            if ignored(path, patterns, root):
+                continue
+            folders.append({"path": str(path), "root": str(root), "depth": len(relative.parts),
+                            "modified": datetime.fromtimestamp(path.lstat().st_mtime).astimezone().isoformat(timespec="minutes")})
+            if len(folders) >= limit:
+                return folders, True
+    return folders, False
+
+
 def _trash_roots():
     """Candidate directories where the OS browser/desktop trash keeps files."""
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
     return [data_home / "Trash" / "files", Path.home() / ".Trash"]
 
 
-def _locate_in_trash(name, size):
-    """Find the file we just trashed so the manifest can record a restore path."""
+def _locate_in_trash(name, size, directory=False):
+    """Find the item we just trashed so the manifest can record a restore path."""
     for root in _trash_roots():
         candidate = root / name
         try:
             info = os.lstat(candidate)
         except OSError:
+            continue
+        if directory:
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                return candidate
             continue
         if stat.S_ISREG(info.st_mode) and (size is None or info.st_size == size):
             return candidate
@@ -352,9 +434,11 @@ def trash_path(path: Path):
     """
     path = Path(path)
     try:
-        original_size = os.lstat(path).st_size
+        original_info = os.lstat(path)
+        original_size = original_info.st_size
+        original_is_dir = stat.S_ISDIR(original_info.st_mode)
     except OSError:
-        original_size = None
+        original_size, original_is_dir = None, False
     try:
         from send2trash import send2trash
     except ImportError:
@@ -364,7 +448,7 @@ def trash_path(path: Path):
             send2trash(str(path))
         except Exception as exc:
             raise RuntimeError(f"Could not move item to system trash: {exc}") from exc
-        located = _locate_in_trash(path.name, original_size)
+        located = _locate_in_trash(path.name, original_size, original_is_dir)
         return {"route": "system trash", "destination": str(located) if located else None}
     if platform.system() == "Linux":
         trash = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
@@ -418,7 +502,8 @@ def list_audit_manifests(limit=20):
         if not isinstance(items, list):
             continue
         summaries.append({"name": path.name, "created": data.get("created"), "items": len(items),
-                          "restorable": sum(1 for item in items if isinstance(item, dict) and item.get("destination")),
+                          "restorable": sum(1 for item in items if isinstance(item, dict) and item.get("destination")
+                                           and item.get("kind") != "directory"),
                           "route": sorted({str(item.get("route")) for item in items if isinstance(item, dict) and item.get("route")})})
     return summaries
 
@@ -461,6 +546,9 @@ def restore_manifest(manifest, dry_run=False):
             continue
         original = Path(str(entry["path"]))
         destination = entry.get("destination")
+        if entry.get("kind") == "directory":
+            skipped.append({"path": str(original), "reason": "Empty folders are not restored automatically; recreate the folder or restore it from your system Trash."})
+            continue
         if entry.get("route") == "ollama rm":
             skipped.append({"path": str(original), "reason": "Removed by Ollama; re-download the model with `ollama pull`."})
             continue
@@ -676,6 +764,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(huggingface_prune_preview())
             except RuntimeError as exc:
                 return self.send_json({"error": str(exc)}, 400)
+        if parsed.path == "/api/empty-dirs":
+            roots = scanned_roots()
+            if not roots:
+                return self.send_json({"error": "Run a scan first; empty folders are only reported inside scanned locations."}, 400)
+            folders, truncated = empty_directories(roots)
+            return self.send_json({"folders": folders, "count": len(folders), "truncated": truncated, "roots": roots})
+        if parsed.path == "/api/trash-empty-dirs":
+            paths = payload.get("paths", [])
+            if not isinstance(paths, list) or any(not isinstance(value, str) for value in paths):
+                return self.send_json({"error": "Folder paths must be provided as a list of strings."}, 400)
+            if not paths:
+                return self.send_json({"error": "Select at least one empty folder first."}, 400)
+            root_paths = []
+            for root_value in scanned_roots():
+                try:
+                    root_paths.append(Path(root_value).resolve(strict=True))
+                except OSError:
+                    continue
+            if not root_paths:
+                return self.send_json({"error": "Run a scan first; only folders inside scanned locations can be cleaned."}, 400)
+            processes = running_ai_processes()
+            if processes is None:
+                return self.send_json({"error": "Cannot verify running processes; install requirements and retry."}, 400)
+            moved, errors = [], []
+            # Deepest first, so a swept folder is empty by the time its parent is checked.
+            for value in sorted(set(paths), key=lambda entry: len(Path(entry).parts), reverse=True):
+                try:
+                    candidate, failure = None, None
+                    for root in root_paths:
+                        try:
+                            candidate = validate_empty_directory(Path(value), root)
+                            runtime = runtime_for_source(str(root))
+                            if runtime:
+                                reason = process_block_reason(str(root), processes)
+                                if reason:
+                                    raise RuntimeError(reason)
+                            failure = None
+                            break
+                        except RuntimeError as exc:
+                            candidate, failure = None, exc
+                    if candidate is None:
+                        raise failure or RuntimeError("Folder is outside the scanned locations; skipped")
+                    result = trash_path(candidate)
+                    if isinstance(result, str):
+                        result = {"route": result, "destination": None}
+                    moved.append({"path": str(candidate), "kind": "directory", "size": 0, "category": "Empty folder",
+                                  "route": result.get("route"), "destination": result.get("destination"), "modified": None})
+                except Exception as exc:
+                    errors.append({"path": value, "error": str(exc)})
+            audit_path, audit_error = write_audit_manifest(moved)
+            if audit_error: errors.append({"path": "audit manifest", "error": audit_error})
+            remaining, _ = empty_directories(scanned_roots())
+            return self.send_json({"moved": moved, "errors": errors, "audit": audit_path, "remaining": len(remaining)})
         if parsed.path == "/api/duplicates":
             return self.send_json({"groups": exact_model_duplicates(list(state.findings.values()))})
         if parsed.path == "/api/ollama-remove":
