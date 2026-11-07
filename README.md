@@ -2,6 +2,20 @@
 
 A local-first disk analyzer for finding caches and temporary artifacts left by AI clients, developer tools, and local model runtimes. The GUI is inspired by the dense, practical layout of disk-usage analyzers such as WizTree: a location tree, sortable file list, at-a-glance category totals, and a space map.
 
+## Install a release
+
+Version 1.0.0 ships as ready-to-run builds on the [releases page](https://github.com/SeanShaffer88/AICleanUp/releases). Nothing needs Python, and no build runs as a service or keeps a background process.
+
+- **Windows installer** — `AICleanUp-Setup-1.0.0.exe`. Installs per user (no administrator prompt, nothing written to `Program Files`), adds a Start Menu entry, offers a desktop shortcut, and uninstalls cleanly.
+- **Windows portable** — `AICleanUp-1.0.0-windows-x64-portable.zip`. Unzip anywhere and run `AICleanUp.exe`.
+- **Linux portable** — `AICleanUp-1.0.0-linux-x64-portable.zip`. Unzip, `chmod +x AICleanUp` if the bit was lost, then run it.
+- **macOS portable (Apple silicon)** — `AICleanUp-1.0.0-macos-arm64-portable.zip`. Unzip and run `./AICleanUp`.
+- **`SHA256SUMS.txt`** — hashes for every artifact above, so a download can be verified before it is run.
+
+Each portable zip contains `START-HERE.txt`, `LICENSE`, and the readme. Double-clicking the executable opens the workspace at `http://127.0.0.1:8765`; deleting the folder removes the app and nothing else.
+
+The builds are unsigned, so Windows SmartScreen may ask for **More info → Run anyway** and macOS Gatekeeper needs **right-click → Open** on the first launch (or `xattr -d com.apple.quarantine ./AICleanUp`). Every build is made by this repository's own workflow from the tagged commit; see [Build a release](#build-a-release).
+
 ## Launch the GUI
 
 Requires Python 3.9 or newer. Install the runtime safety/trash helpers, then launch from this folder:
@@ -125,11 +139,50 @@ npm run test:ui
 
 The PNG and PDF exports are also checked by eye during review: the PNG is drawn from the same treemap geometry as the PDF, and the PDF is a single vector page that any reader opens without embedded fonts.
 
+## Build a release
+
+The release artifacts come from three files, all checked in:
+
+- `packaging/aicleanup.spec` — one PyInstaller executable per platform, with `web/`, `LICENSE`, and the readme bundled inside the binary.
+- `packaging/aicleanup.iss` — the Inno Setup script behind the Windows installer (per-user install, Start Menu entry, uninstaller).
+- `packaging/make_archive.py` — writes the portable zip with fixed timestamps and preserved executable bits, so the same input always produces the same archive.
+
+To build locally on the machine you are on:
+
+```bash
+python3 -m pip install pyinstaller -r requirements.txt
+python3 -m PyInstaller --noconfirm --clean packaging/aicleanup.spec
+./dist/AICleanUp --version        # AICleanUp 1.0.0
+```
+
+On Windows, wrap that output into the installer (Inno Setup 6 or newer on `PATH`):
+
+```bat
+ISCC.exe /DAppVersion=1.0.0 packaging\aicleanup.iss
+```
+
+`ISCC` writes `dist\AICleanUp-Setup-1.0.0.exe`. To stage a portable folder and zip it:
+
+```bash
+mkdir -p package && cp dist/AICleanUp* LICENSE README.md package/
+python3 packaging/make_archive.py package AICleanUp-1.0.0-linux-x64-portable.zip
+```
+
+Tagging cuts the whole release: `.github/workflows/release.yml` runs the test suite, then builds on Windows, Linux, and macOS, attaches every artifact to the release for that tag, and publishes `SHA256SUMS.txt` last. To publish a version:
+
+```bash
+git tag -a v1.0.0 -m "AICleanUp 1.0.0"
+git push origin v1.0.0
+```
+
+The workflow can also be started by hand from the Actions tab with a version number, which is useful for re-running a build without moving the tag.
+
 ## Command line
 
 The command-line interface is read-only by default: a plain run or `--dry-run` only prints totals. `--restore` and `--sweep-empty` preview unless `--confirm` is given, and `--duplicates` never changes anything:
 
 ```bash
+python3 aicleanup.py --version
 python3 aicleanup.py --dry-run
 python3 aicleanup.py --workspace ~/src/my-project
 python3 aicleanup.py --include-models

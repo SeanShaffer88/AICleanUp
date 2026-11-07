@@ -1,7 +1,7 @@
 {
   "name": "aicleanup-ui-checks",
   "private": true,
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Optional browser-less UI smoke test for the AICleanUp workspace.",
   "scripts": {
     "test:ui": "node tests/ui_smoke.js"

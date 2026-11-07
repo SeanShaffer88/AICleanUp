@@ -1,0 +1,206 @@
+name: Release
+
+# Tagging 1.0.0 (git tag v1.0.0 && git push origin v1.0.0) builds every
+# artifact and attaches it to the GitHub release for that tag:
+#
+#   AICleanUp-Setup-<version>.exe        Windows installer (Inno Setup, per user)
+#   AICleanUp-<version>-windows-x64-portable.zip
+#   AICleanUp-<version>-linux-x64-portable.zip
+#   AICleanUp-<version>-macos-arm64-portable.zip
+#   SHA256SUMS.txt
+#
+# The release itself is created by hand with its notes; this workflow uploads
+# the binaries to it, and creates a placeholder release if none exists yet.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (for example 1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Test suite
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip -r requirements.txt
+      - name: Run the Python suite
+        run: python -m unittest discover -s tests -v
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            platform: Windows (64-bit)
+          - name: linux-x64
+            os: ubuntu-22.04
+            platform: Linux (x86_64)
+          - name: macos-arm64
+            os: macos-14
+            platform: macOS (Apple silicon)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Building AICleanUp $version for ${{ matrix.name }}"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip pyinstaller -r requirements.txt
+
+      - name: Build the application
+        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging/aicleanup.spec
+
+      - name: Check the build runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="dist/AICleanUp"
+          if [ -f "$binary.exe" ]; then binary="$binary.exe"; fi
+          "$binary" --version | grep -F "$APP_VERSION"
+          "$binary" --duplicates --json > /dev/null
+          echo "Binary answers --version and --duplicates."
+
+      - name: Stage the portable folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package && mkdir -p package
+          cp dist/AICleanUp* package/
+          cp LICENSE README.md package/
+          cat > package/START-HERE.txt <<EOF
+          AICleanUp ${APP_VERSION} - portable build for ${{ matrix.platform }}
+          =====================================================================
+
+          1. Keep this folder together; the whole app lives inside it.
+          2. Start it:
+             - Windows: double-click AICleanUp.exe
+             - macOS / Linux: run ./AICleanUp
+          3. Your browser opens http://127.0.0.1:8765 with the workspace.
+
+          There is no installer, no service, and no background process.
+          Delete the folder to remove the app. Scanned locations, the system
+          Trash, and ~/.aicleanup/audit manifests are never touched by
+          deleting it.
+
+          Command line
+            AICleanUp --version
+            AICleanUp --dry-run                  print a scan summary
+            AICleanUp --duplicates --json        exact SHA-256 report
+            AICleanUp --gui --port 8766          serve the workspace on another port
+            AICleanUp --help
+
+          Notes
+            - This build is unsigned, so the first launch may need
+              right-click -> Open (macOS) or "More info -> Run anyway" (Windows).
+            - Linux: if the executable bit did not survive unzipping,
+              run chmod +x AICleanUp.
+            - Scanning, hashing, and cleanup all run on this machine.
+              Nothing is uploaded.
+
+          AICleanUp ${APP_VERSION} - MIT License, see LICENSE.
+          EOF
+
+      - name: Build the portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python packaging/make_archive.py package "AICleanUp-${APP_VERSION}-${{ matrix.name }}-portable.zip"
+
+      - name: Build the Windows installer
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup was not found at $iscc" }
+          & $iscc "/DAppVersion=$env:APP_VERSION" "packaging\aicleanup.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $setup = "dist\AICleanUp-Setup-$env:APP_VERSION.exe"
+          if (-not (Test-Path $setup)) { throw "The installer was not produced: $setup" }
+          Move-Item $setup .
+          Get-Item "AICleanUp-Setup-$env:APP_VERSION.exe" | Select-Object Name, Length
+
+      - name: Attach the build to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          repo="$GITHUB_REPOSITORY"
+          if ! gh release view "$tag" -R "$repo" > /dev/null 2>&1; then
+            gh release create "$tag" -R "$repo" --title "AICleanUp ${APP_VERSION}" \
+              --notes "Artifacts for AICleanUp ${APP_VERSION}." --verify-tag
+          fi
+          files=()
+          for archive in "AICleanUp-${APP_VERSION}-"*"-portable.zip"; do
+            [ -e "$archive" ] && files+=("$archive")
+          done
+          setup="AICleanUp-Setup-${APP_VERSION}.exe"
+          [ -e "$setup" ] && files+=("$setup")
+          printf 'Uploading: %s\n' "${files[@]}"
+          gh release upload "$tag" -R "$repo" "${files[@]}" --clobber
+
+      - name: Keep the build for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            AICleanUp-*.zip
+            AICleanUp-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  checksums:
+    name: Publish checksums
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Hash every downloaded asset and attach SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+          mkdir -p assets && cd assets
+          gh release download "$tag" -R "$repo" --pattern 'AICleanUp-*.zip' --pattern 'AICleanUp-Setup-*.exe' --clobber
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$tag" -R "$repo" SHA256SUMS.txt --clobber

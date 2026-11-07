@@ -46,6 +46,7 @@ const { window } = dom;
 window.fetch = async (url, options = {}) => {
   calls.push({ url, body: options.body });
   const reply = (value) => ({ ok: true, status: 200, json: async () => value });
+  if (url === '/api/meta') return reply({ version: '1.0.0', platform: 'Linux', python: '3.11.2', frozen: false });
   if (url === '/api/scan') return reply({ items: JSON.parse(JSON.stringify(fixtures)), warnings: [], scanned: 2 });
   if (url === '/api/audits') return reply({ audits: [{ name: 'cleanup_audit_x.json', created: new Date().toISOString(), items: 3, restorable: 2 }] });
   if (url === '/api/duplicates') {
@@ -110,6 +111,8 @@ setTimeout(async () => {
   check('statistics panel populated', $('#statsPanel').textContent.includes('Findings'));
   check('space map blocks', $$('#treemapCanvas .map-block').length === fixtures.length, $$('#treemapCanvas .map-block').length);
   check('restore enabled by audits', $('#restoreBtn').disabled === false);
+  check('title bar shows the version', $('#appVersion').textContent === 'v1.0.0', $('#appVersion').textContent);
+  check('version badge becomes visible', $('#appVersion').hidden === false);
   check('HF preview enabled', $('#hfPreviewBtn').disabled === false);
 
   click($$('#fileRows .file-row')[0]);
