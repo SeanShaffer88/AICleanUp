@@ -51,6 +51,14 @@ window.fetch = async (url, options = {}) => {
     { runtime: 'huggingface', models: 1, bytes: 4096, stores: ['/home/u/.cache/hf/hub'], cli: 'hf', management: 'Use `hf cache rm` or review `hf cache prune --dry-run`.' },
     { runtime: 'ollama', models: 1, bytes: 1024, stores: ['/home/u/.ollama/models'], cli: null, management: 'Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.' },
   ] });
+  if (url === '/api/empty-dirs') return reply({ count: 2, truncated: false, roots: ['/home/u/.cache/hf/hub'], folders: [
+    { path: '/home/u/.cache/hf/hub/old-run/logs', root: '/home/u/.cache/hf/hub', depth: 3 },
+    { path: '/home/u/proj/tmp_gen', root: '/home/u/proj', depth: 1 },
+  ] });
+  if (url === '/api/trash-empty-dirs') {
+    const paths = JSON.parse(options.body || '{}').paths || [];
+    return reply({ moved: paths.map((path) => ({ path, kind: 'directory' })), errors: [], audit: '/home/u/.aicleanup/audit/cleanup_audit_sweep.json', remaining: 0 });
+  }
   if (url === '/api/hf-prune-preview') return reply({ command: 'hf cache prune --dry-run', output: 'Would free 1G', dry_run: true, warnings: '' });
   if (typeof url === 'string' && url.startsWith('/api/ignore')) {
     if (url.startsWith('/api/ignore?')) {
@@ -299,6 +307,23 @@ setTimeout(async () => {
   check('deleting a scope clears storage', JSON.parse(window.localStorage.getItem('aicleanup.scopes') || '[]').length === 0, window.localStorage.getItem('aicleanup.scopes'));
   check('scope panel returns to the empty state', $$('#scopeSelect option').length === 1, $$('#scopeSelect option').length);
   check('scope delete disabled after deleting', $('#scopeDelete').disabled === true);
+
+  // empty-folder sweep
+  check('empty folder button enabled after scan', $('#emptyDirsBtn').disabled === false);
+  click($('#emptyDirsBtn'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check('empty folder dialog lists every folder', $$('#emptyList li').length === 2, $$('#emptyList li').length);
+  check('empty folder dialog explains the audit', $('#emptyNote').textContent.includes('audit manifest'), $('#emptyNote').textContent);
+  check('empty folder list shows the depth', $('#emptyList small').textContent.includes('3 levels deep'), $('#emptyList small').textContent);
+  check('empty folder confirm names the count', $('#emptyConfirm').textContent === 'Move 2 folders to Trash', $('#emptyConfirm').textContent);
+  check('status says nothing was removed yet', $('#statusText').textContent.includes('nothing removed yet'), $('#statusText').textContent);
+  click($('#emptyConfirm'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const sweep = calls.find((call) => call.url === '/api/trash-empty-dirs');
+  check('sweep posts every listed folder', sweep && JSON.parse(sweep.body).paths.length === 2, sweep && sweep.body);
+  check('sweep closes the dialog', !$('#emptyDialog').hasAttribute('open'));
+  check('sweep reports the result', $('#toast').textContent.includes('2 empty folders moved'), $('#toast').textContent);
+  check('sweep records the audit path', $('#statusText').title.includes('cleanup_audit_sweep'), $('#statusText').title);
 
   // ignore-rule editor
   check('ignore button enabled after scan', $('#ignoreBtn').disabled === false);

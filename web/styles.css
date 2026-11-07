@@ -141,3 +141,10 @@ table tbody tr[hidden]{display:none}
 .ignore-field input:focus{border-color:#4a7ba8;box-shadow:0 0 0 1px #2f567b80}
 .ignore-help{color:#7f868f;font-size:10px;line-height:1.5;margin:9px 0 0;font-family:var(--mono)}
 .info-btn small{color:#8fbfe8;font:8.5px var(--mono);margin-left:4px}
+/* v0.4: empty-folder sweep */
+.empty-list{list-style:none;margin:12px 0 0;padding:0;max-height:210px;overflow:auto;border:1px solid #383c43;border-radius:4px;background:#1b1e23}
+.empty-list li{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:6px 9px;border-bottom:1px solid #2c2f35;font:10px var(--mono)}
+.empty-list li:last-child{border-bottom:0}
+.empty-path{color:#cdd3da;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.empty-list small{color:#767d86;white-space:nowrap;font:9px var(--mono)}
+.empty-list .empty-more{color:#8b929b;font-style:italic;justify-content:flex-start}

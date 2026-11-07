@@ -295,3 +295,73 @@ class ScannerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyDirectoryTests(unittest.TestCase):
+    def test_empty_directories_reports_file_free_trees_deepest_first(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "cache-root"
+            (root / "cache/v/cache").mkdir(parents=True)
+            (root / "empty-only").mkdir()
+            (root / "models").mkdir()          # runtime layout names are kept
+            (root / "blobs").mkdir()
+            (root / "logs").mkdir()
+            (root / "logs/app.log").write_text("log", encoding="utf-8")
+
+            folders, truncated = aicleanup.empty_directories([str(root)])
+            paths = [entry["path"] for entry in folders]
+
+            self.assertFalse(truncated)
+            self.assertEqual(set(paths), {str(root / "cache/v/cache"), str(root / "cache/v"), str(root / "cache"),
+                                          str(root / "empty-only")})
+            self.assertEqual(folders[0]["depth"], 3)
+            self.assertEqual(paths[0], str(root / "cache/v/cache"))
+            self.assertNotIn(str(root / "models"), paths)
+            self.assertNotIn(str(root / "blobs"), paths)
+            self.assertNotIn(str(root / "logs"), paths)
+            self.assertNotIn(str(root), paths)
+
+    def test_empty_directories_skips_symlinks_and_ignored_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "root"
+            (root / "keepme").mkdir(parents=True)
+            (root / "empty").mkdir()
+            (root / ".aicleanignore").write_text("keepme\n", encoding="utf-8")
+            outside = base / "outside"
+            outside.mkdir()
+            (root / "linked").symlink_to(outside)
+
+            folders, _ = aicleanup.empty_directories([str(root)])
+            paths = [entry["path"] for entry in folders]
+
+            self.assertIn(str(root / "empty"), paths)
+            self.assertNotIn(str(root / "keepme"), paths)
+            self.assertNotIn(str(root / "linked"), paths)
+            self.assertTrue(outside.is_dir())
+            self.assertTrue((root / "linked").is_symlink())
+
+    def test_validate_empty_directory_refuses_unsafe_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "root"
+            empty = root / "a/empty"
+            empty.mkdir(parents=True)
+            filled = root / "filled"
+            filled.mkdir()
+            (filled / "data.bin").write_bytes(b"x")
+            layout = root / "blobs"
+            layout.mkdir()
+            (root / "file.txt").write_text("x", encoding="utf-8")
+            outside = base / "outside"
+            outside.mkdir()
+            (root / "linked").symlink_to(outside)
+
+            self.assertEqual(aicleanup.validate_empty_directory(empty, root), empty)
+            for path, fragment in ((root, "scan root"), (filled, "no longer empty"), (root / "file.txt", "Only folders"),
+                                   (outside, "outside the scanned"), (layout, "layout folders"),
+                                   (root / "linked", "Symbolic links")):
+                with self.assertRaises(RuntimeError) as error:
+                    aicleanup.validate_empty_directory(path, root)
+                self.assertIn(fragment, str(error.exception))
+            self.assertTrue(filled.is_dir() and layout.is_dir())
