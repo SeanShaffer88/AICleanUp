@@ -752,6 +752,7 @@ function renderNodeInfo() {
     : '<span class="status-pill block">Blocked</span>';
   const rows = [
     ['Path', `<span class="info-path">${esc(x.path)}</span>`],
+    ...(x.link_target ? [['Blob', `<span class="info-path">${esc(x.link_target)}</span>`]] : []),
     ['Size', `${bytes(x.size)}${x.logical_size!==undefined?` <span class="info-muted">· ${bytes(x.logical_size)} logical</span>`:''}`],
     ['Modified', esc(new Date(x.modified).toLocaleString())],
     ['Category', esc(x.category)],
@@ -761,6 +762,7 @@ function renderNodeInfo() {
   ];
   host.innerHTML = `<div class="info-title">${esc(x.name)} ${status}</div>
     <dl class="info-grid">${rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    ${x.link_target?'<p class="info-note">Revision link to one shared blob — counted once across every revision.</p>':''}
     ${x.blocked_reason?`<p class="info-note warn">${esc(x.blocked_reason)}</p>`:''}
     ${x.guidance?`<p class="info-note">${esc(x.guidance)}</p>`:''}
     <div class="info-actions">
@@ -1017,7 +1019,7 @@ function exportRows(kind) {
   if (state.view === 'duplicates') { exportDuplicateRows(kind); return; }
   const rows = filtered();
   if (!rows.length) { toast('Nothing to export in the current view'); return; }
-  const fields = ['path','name','size','modified','category','risk','runtime','source','cleanup_action','can_delete','age_blocked','blocked_reason','guidance'];
+  const fields = ['path','name','size','modified','category','risk','runtime','source','cleanup_action','can_delete','age_blocked','blocked_reason','guidance','link_target'];
   const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'');
   let text, mime, ext;
   if (kind === 'json') {

@@ -199,6 +199,7 @@ def scan(roots, include_models=False):
         for current, dirs, files in os.walk(root, followlinks=False):
             current_path = Path(current)
             # Do not cross symlinked or excluded directories.
+            dirs.sort(); files.sort()
             dirs[:] = [d for d in dirs if not (current_path / d).is_symlink() and not ignored(current_path / d, patterns, resolved_root)]
             if partial_scan and not include_models:
                 dirs[:] = [d for d in dirs if d.casefold() == "blobs"] if current_path == root else []
@@ -212,10 +213,28 @@ def scan(roots, include_models=False):
                 total_seen += 1
                 p = current_path / filename
                 try:
-                    if p.is_symlink() or ignored(p, patterns, resolved_root): continue
-                    file_stat = os.stat(p, follow_symlinks=False)
-                    if not stat.S_ISREG(file_stat.st_mode): continue
-                    canonical_path = str(p.resolve(strict=True))
+                    if ignored(p, patterns, resolved_root): continue
+                    link_target = None
+                    if p.is_symlink():
+                        # Hugging Face caches keep the real weights in blobs/ and expose
+                        # them through per-revision symlinks, so a model folder would
+                        # otherwise look empty. Follow links only inside a model root,
+                        # only when the target stays inside that root, and count each
+                        # physical file once so a shared blob is never double-counted.
+                        if not is_model: continue
+                        try:
+                            link_target = p.resolve(strict=True)
+                        except (OSError, RuntimeError):
+                            # Broken links and link loops are skipped, never followed.
+                            continue
+                        if not link_target.is_file(): continue
+                        if resolved_root != link_target and resolved_root not in link_target.parents: continue
+                        file_stat = os.stat(link_target)
+                        canonical_path = str(link_target)
+                    else:
+                        file_stat = os.stat(p, follow_symlinks=False)
+                        if not stat.S_ISREG(file_stat.st_mode): continue
+                        canonical_path = str(p.resolve(strict=True))
                     if canonical_path in seen_paths: continue
                     partial = runtime == "ollama" and is_ollama_partial(p)
                     if runtime == "ollama" and not partial:
@@ -252,6 +271,7 @@ def scan(roots, include_models=False):
                     elif partial:
                         guidance = "Orphaned partial download. Requires 7-day age and Ollama stopped."
                     findings.append({"id": uuid.uuid4().hex, "path": str(p), "name": p.name, "root": str(root),
+                                     "link_target": str(link_target) if link_target else None,
                                      "source": label, "runtime": runtime, "category": cat, "size": file_stat.st_size,
                                      "modified": datetime.fromtimestamp(file_stat.st_mtime).astimezone().isoformat(timespec="minutes"),
                                      "model": bool(is_weight), "risk": risk, "cleanup_action": action,
@@ -259,7 +279,7 @@ def scan(roots, include_models=False):
                                      "age_blocked": age_blocked,
                                      "selected": cat == "Caches" and can_delete})
                     seen_paths.add(canonical_path)
-                except (OSError, PermissionError):
+                except (OSError, PermissionError, RuntimeError):
                     continue
             if stop_scan:
                 break
