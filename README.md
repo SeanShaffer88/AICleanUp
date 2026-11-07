@@ -9,7 +9,7 @@ Version 1.0.0 ships as ready-to-run builds on the [releases page](https://github
 - **Windows installer** — `AICleanUp-Setup-1.0.0.exe`. Installs per user (no administrator prompt, nothing written to `Program Files`), adds a Start Menu entry, offers a desktop shortcut, and uninstalls cleanly.
 - **Windows portable** — `AICleanUp-1.0.0-windows-x64-portable.zip`. Unzip anywhere and run `AICleanUp.exe`.
 - **Linux portable** — `AICleanUp-1.0.0-linux-x64-portable.zip`. Unzip, `chmod +x AICleanUp` if the bit was lost, then run it.
-- **macOS portable (Apple silicon)** — `AICleanUp-1.0.0-macos-arm64-portable.zip`. Unzip and run `./AICleanUp`.
+- **macOS portable** — `AICleanUp-1.0.0-macos-arm64-portable.zip` on Apple silicon (the name carries the architecture: `-macos-x64-` for an Intel build). Unzip and run `./AICleanUp`.
 - **`SHA256SUMS.txt`** — hashes for every artifact above, so a download can be verified before it is run.
 
 Each portable zip contains `START-HERE.txt`, `LICENSE`, and the readme. Double-clicking the executable opens the workspace at `http://127.0.0.1:8765`; deleting the folder removes the app and nothing else.
