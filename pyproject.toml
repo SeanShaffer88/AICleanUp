@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicleanup"
+version = "1.0.0"
+description = "Local AI-artifact scanner with a safe, browser-based interface."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "send2trash>=1.8.3",
+    "psutil>=5.9.8",
+]
+
+[project.scripts]
+aicleanup = "aicleanup:main"
+
+[tool.setuptools]
+py-modules = ["aicleanup", "runtime_support"]

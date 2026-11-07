@@ -2,6 +2,23 @@
 
 A local-first disk analyzer for finding caches and temporary artifacts left by AI clients, developer tools, and local model runtimes. The GUI is inspired by the dense, practical layout of disk-usage analyzers such as WizTree: a location tree, sortable file list, at-a-glance category totals, and a space map.
 
+## Use without downloading (clone and run)
+
+You don't need to download a release to use AICleanUp. Clone the repo, install it in place, and launch:
+
+```bash
+git clone https://github.com/SeanShaffer88/AICleanUp.git
+cd AICleanUp
+python3 -m pip install -e .
+aicleanup --gui
+```
+
+The interface opens at `http://127.0.0.1:8765`. The editable install (`-e`) means any change you make to `aicleanup.py` or `runtime_support.py` is live immediately — no reinstall needed.
+
+- **No downloads**: everything runs from source; the only network use is fetching `send2trash` and `psutil` from PyPI when you install.
+- **GUI bound to loopback by default**: other devices on your network cannot reach the scanner. Use `--host 0.0.0.0` only behind a trusted proxy.
+- **Uninstall**: `python3 -m pip uninstall aicleanup` removes the package; deleting the cloned folder removes everything else.
+
 ## Install a release
 
 Version 1.0.0 ships as ready-to-run builds on the [releases page](https://github.com/SeanShaffer88/AICleanUp/releases). Nothing needs Python, and no build runs as a service or keeps a background process.
