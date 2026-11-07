@@ -38,6 +38,11 @@
 
     <section class="workspace-grid">
       <aside class="sidebar">
+        <div class="pane-heading"><span>SCAN SCOPES</span><span class="pane-heading-actions"><button class="icon-btn" id="scopeSave" title="Save the current folders and scan options as a scope">＋</button><button class="icon-btn" id="scopeDelete" title="Delete the selected scope" disabled>⨯</button></span></div>
+        <div class="scope-panel">
+          <select id="scopeSelect" aria-label="Saved scan scopes"><option value="">No saved scopes yet</option></select>
+          <div class="scope-note" id="scopeNote">Save a scope to reuse folders and scan options.</div>
+        </div>
         <div class="pane-heading"><span>TREE VIEW</span><span class="pane-heading-actions"><button class="icon-btn pane-action" id="ignoreBtn" disabled title="Edit the .aicleanignore rules for a scanned folder">.ignore</button><button class="icon-btn" id="collapseTree" title="Collapse the folder tree">⌃</button><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></span></div>
         <div class="tree-scroll"><div class="tree-list" id="folderTree"><div class="tree-empty">Run a scan to build the folder tree.</div></div></div>
         <div class="pane-heading"><span>FILTER PANEL</span><button class="icon-btn" id="clearFilters" title="Clear all filters">⨯</button></div>
@@ -61,10 +66,10 @@
           </div>
         </div>
         <div class="table-wrap"><table><thead><tr id="filesHead"><th class="check-col"><input type="checkbox" id="selectVisible" aria-label="Select visible files" /></th><th class="name-head">NAME <button class="sort" id="sortName">↕</button></th><th class="size-head" id="sortSize">SIZE <span>↓</span></th><th class="date-head">LAST MODIFIED</th><th class="category-head">CATEGORY</th></tr><tr id="duplicatesHead" hidden><th class="check-col"></th><th class="name-head">GROUP / COPY</th><th class="size-head">SIZE</th><th class="date-head">OWNER</th><th class="category-head">ACTION</th></tr></thead><tbody id="fileRows"><tr class="empty-state"><td colspan="5"><div class="empty-icon">⌕</div><strong>Ready when you are</strong><p>Scan known AI app locations, or add a project folder above.</p><button class="text-button" id="emptyScan">Start a scan →</button></td></tr></tbody></table></div>
-        <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-hint">Moved files stay restorable from the audit manifest</span></div>
+        <div class="table-footer"><span id="shownCount">0 items</span><span class="footer-actions"><button class="text-button footer-action" id="selectEligible" disabled title="Select every cleanup-eligible file in the current view in one pass">Select eligible in view</button><span class="footer-note" id="selectNote"></span></span><span class="footer-hint">Moved files stay restorable from the audit manifest</span></div>
         <div class="treemap-head">
           <div><span class="section-title">SPACE MAP</span><span class="sub-title">Each block is a file · click to inspect · double-click to zoom to its folder</span></div>
-          <div class="map-controls"><span class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></span><span class="zoom-group"><button class="icon-btn" id="zoomOut" title="Zoom out">−</button><span id="zoomLabel">100%</span><button class="icon-btn" id="zoomIn" title="Zoom in">+</button><button class="icon-btn" id="zoomReset" title="Reset zoom and pan">⟲</button></span></div>
+          <div class="map-controls"><span class="export-group map-export"><button class="toolbar-btn" id="exportMapPng" title="Save the current space map as a PNG image">PNG</button><button class="toolbar-btn" id="exportMapPdf" title="Save the current space map as a PDF">PDF</button></span><span class="map-legend"><span><i class="legend-square cache"></i>Cache</span><span><i class="legend-square dev"></i>Developer</span><span><i class="legend-square output"></i>Outputs</span><span><i class="legend-square model"></i>Models</span></span><span class="zoom-group"><button class="icon-btn" id="zoomOut" title="Zoom out">−</button><span id="zoomLabel">100%</span><button class="icon-btn" id="zoomIn" title="Zoom in">+</button><button class="icon-btn" id="zoomReset" title="Reset zoom and pan">⟲</button></span></div>
         </div>
         <div class="treemap" id="treemap"><div class="treemap-canvas" id="treemapCanvas"><div class="map-empty">Run a scan to visualize space usage</div></div></div>
       </section>
@@ -99,6 +104,10 @@
     <label class="ignore-field"><span>Patterns — one per line</span><textarea id="ignoreRules" rows="8" spellcheck="false" placeholder="*.tmp&#10;cache/**&#10;# comments are kept"></textarea></label>
     <p class="ignore-help">Glob patterns match a path inside the folder or a file name. Lines starting with <b>#</b> stay as comments. Clearing the list removes the file so default scanning resumes.</p>
     <div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="ignoreSave" value="save">Save rules</button></div></form></dialog>
+  <dialog id="scopeDialog"><form method="dialog"><h2>Save scan scope</h2><p class="output-note">A scope stores the folder path and scan options in this browser only. Nothing is scanned until you apply it.</p>
+    <label class="ignore-field"><span>Scope name</span><input id="scopeName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Models only" /></label>
+    <p class="ignore-help" id="scopeSummary"></p>
+    <div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="scopeConfirm" value="save">Save scope</button></div></form></dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="/app.js"></script>
 </body>

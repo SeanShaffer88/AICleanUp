@@ -8,7 +8,7 @@ const state = {
   audits: [], overrideRecent: false,
   selectedId: null, duplicateGroups: null, view: 'files', runtimes: [],
   zoom: 1, panX: 0, panY: 0,
-  expanded: new Set(),
+  expanded: new Set(), scopes: [],
 };
 
 const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
@@ -54,6 +54,105 @@ function filterDescription() {
   if (state.risk !== 'all') bits.push(state.risk === 'recent' ? 'recent only' : `${state.risk} risk`);
   if (state.query.trim()) bits.push(`“${state.query.trim()}”`);
   return bits.length ? bits.join(' · ') : 'no filters applied';
+}
+
+// ---------------------------------------------------------------- scan scopes
+const SCOPE_KEY = 'aicleanup.scopes';
+const SCOPE_LIMIT = 12;
+
+function scopeStore() {
+  try { return window.localStorage || null; } catch { return null; }
+}
+
+function readScopes() {
+  const store = scopeStore();
+  if (!store) return [];
+  try {
+    const parsed = JSON.parse(store.getItem(SCOPE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(entry => entry && typeof entry.name === 'string' && entry.name.trim())
+      .slice(0, SCOPE_LIMIT)
+      .map(entry => ({
+        name: String(entry.name).trim().slice(0, 60),
+        workspace: typeof entry.workspace === 'string' ? entry.workspace : '',
+        includeModels: !!entry.includeModels,
+        overrideRecent: !!entry.overrideRecent,
+      }));
+  } catch { return []; }
+}
+
+function writeScopes() {
+  const store = scopeStore();
+  if (!store) return false;
+  try { store.setItem(SCOPE_KEY, JSON.stringify(state.scopes)); return true; } catch { return false; }
+}
+
+function scanOptions() {
+  return { workspace: $('#workspace').value.trim(), includeModels: $('#includeModels').checked, overrideRecent: $('#overrideRecent').checked };
+}
+
+function scopeSummary(scope) {
+  const bits = [scope.workspace ? (baseName(scope.workspace) || scope.workspace) : 'default AI locations'];
+  bits.push(scope.includeModels ? 'model weights on' : 'model weights off');
+  if (scope.overrideRecent) bits.push('recent files allowed');
+  return bits.join(' · ');
+}
+
+function renderScopes(preferred) {
+  const select = $('#scopeSelect');
+  if (!select) return;
+  const keep = preferred === undefined ? select.value : preferred;
+  const options = state.scopes.map(scope => `<option value="${esc(scope.name)}">${esc(scope.name)}</option>`).join('');
+  select.innerHTML = state.scopes.length ? `<option value="">Choose a saved scope…</option>${options}` : '<option value="">No saved scopes yet</option>';
+  if (state.scopes.some(scope => scope.name === keep)) select.value = keep;
+  const active = state.scopes.find(scope => scope.name === select.value) || null;
+  $('#scopeDelete').disabled = !active;
+  $('#scopeNote').textContent = active
+    ? `${scopeSummary(active)} — apply to rescan`
+    : state.scopes.length ? 'Pick a scope to rescan with its folders and options.' : 'Save a scope to reuse folders and scan options.';
+}
+
+function applyScope(name) {
+  const scope = state.scopes.find(entry => entry.name === name);
+  if (!scope) { renderScopes(); return; }
+  $('#workspace').value = scope.workspace;
+  $('#includeModels').checked = scope.includeModels;
+  setOverrideRecent(scope.overrideRecent);
+  renderScopes();
+  toast(`Scope “${scope.name}” applied — scanning`);
+  runScan();
+}
+
+function openScopeEditor() {
+  const options = scanOptions();
+  const suggestion = options.workspace ? baseName(options.workspace) : 'All AI locations';
+  $('#scopeName').value = (suggestion || 'All AI locations').slice(0, 60);
+  $('#scopeSummary').textContent = `${scopeSummary(options)} — saved in this browser only.`;
+  openDialog($('#scopeDialog'));
+}
+
+function commitScope(event) {
+  if (event) event.preventDefault();
+  const name = $('#scopeName').value.trim().slice(0, 60);
+  if (!name) { toast('Give the scope a name first'); return; }
+  const entry = { name, ...scanOptions() };
+  const index = state.scopes.findIndex(scope => scope.name.toLowerCase() === name.toLowerCase());
+  if (index >= 0) state.scopes[index] = entry; else state.scopes.push(entry);
+  if (state.scopes.length > SCOPE_LIMIT) state.scopes = state.scopes.slice(-SCOPE_LIMIT);
+  const persisted = writeScopes();
+  closeDialog($('#scopeDialog'));
+  renderScopes(entry.name);
+  toast(persisted ? `Saved scope “${entry.name}”` : `Saved scope “${entry.name}” for this session only`);
+}
+
+function deleteScope() {
+  const name = $('#scopeSelect').value;
+  if (!name) return;
+  state.scopes = state.scopes.filter(scope => scope.name !== name);
+  writeScopes();
+  renderScopes();
+  toast(`Deleted scope “${name}”`);
 }
 
 // ---------------------------------------------------------------- folder tree
@@ -254,6 +353,51 @@ function renderTable() {
   $('#shownCount').textContent = `${shown.length.toLocaleString()} item${shown.length===1?'':'s'} shown · ${selectableRows.length.toLocaleString()} selectable`;
 }
 
+// ---------------------------------------------------------------- bulk selection
+function actionLabel(action) { return action === 'ollama-rm' ? 'ollama rm' : 'Trash'; }
+
+function bulkEligible(folder) {
+  if (folder !== undefined && (folder || null) !== state.folder) state.folder = folder || null;
+  const rows = filtered();
+  const where = state.folder ? `“${baseName(state.folder)}”` : 'the current view';
+  const eligible = rows.filter(x => x.can_delete);
+  if (!eligible.length) {
+    $('#selectNote').textContent = `nothing eligible in ${where} — model weights and recent files stay protected`;
+    render();
+    toast('No cleanup-eligible files here — model weights and recent files stay protected');
+    return;
+  }
+  // Never widen a selection to a second cleanup action: the Trash button only acts on one.
+  const groups = new Map();
+  for (const x of eligible) {
+    const entry = groups.get(x.cleanup_action) || { action: x.cleanup_action, rows: [], bytes: 0 };
+    entry.rows.push(x); entry.bytes += x.size;
+    groups.set(x.cleanup_action, entry);
+  }
+  const locked = selectedItems().map(x => x.cleanup_action).find(action => action && action !== 'none');
+  const chosen = (locked && groups.get(locked))
+    || [...groups.values()].sort((a, b) => b.bytes - a.bytes || a.action.localeCompare(b.action))[0];
+  chosen.rows.forEach(x => { x.selected = true; });
+
+  const notes = [`${chosen.rows.length} selected for ${actionLabel(chosen.action)} · ${bytes(chosen.bytes)}`];
+  for (const other of groups.values()) {
+    if (other === chosen) continue;
+    notes.push(`${other.rows.length} ${actionLabel(other.action)} left for a separate pass`);
+  }
+  const recent = rows.filter(x => !x.can_delete && x.age_blocked && !x.model).length;
+  const protectedRows = rows.filter(x => !x.can_delete && !(x.age_blocked && !x.model)).length;
+  if (recent) notes.push(`${recent} recent skipped (7-day rule)`);
+  if (protectedRows) notes.push(`${protectedRows} runtime-managed or blocked`);
+  $('#selectNote').textContent = notes.join(' · ');
+  render();
+  toast(`Selected ${chosen.rows.length} eligible file${chosen.rows.length === 1 ? '' : 's'} in ${where} — ${actionLabel(chosen.action)} · nothing moved yet`);
+}
+
+function clearSelectNote() {
+  const note = $('#selectNote');
+  if (note) note.textContent = '';
+}
+
 // ---------------------------------------------------------------- space map
 let suppressMapClick = false;
 function applyTransform() {
@@ -281,6 +425,254 @@ function renderMap() {
 function setZoom(next) {
   state.zoom = Math.min(8, Math.max(0.4, next));
   applyTransform();
+}
+
+// ---------------------------------------------------------------- space map export
+const MAP_EXPORT_LIMIT = 150;
+
+function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, ''); }
+
+function downloadFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = filename;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function mapExportModel() {
+  const shown = filtered();
+  const items = [...shown].sort((a, b) => b.size - a.size).slice(0, MAP_EXPORT_LIMIT);
+  const categories = new Map();
+  for (const item of items) {
+    const entry = categories.get(item.category) || { category: item.category, size: 0, count: 0 };
+    entry.size += item.size; entry.count += 1;
+    categories.set(item.category, entry);
+  }
+  return {
+    items, shown: shown.length,
+    total: items.reduce((n, x) => n + x.size, 0),
+    categories: [...categories.values()].sort((a, b) => b.size - a.size),
+    filters: filterDescription(),
+    generated: new Date(),
+  };
+}
+
+function worstRatio(row, sum, side) {
+  const sideSq = side * side, sumSq = sum * sum;
+  let worst = 0;
+  for (const node of row) {
+    const ratio = Math.max((node.area * sideSq) / sumSq, sumSq / (node.area * sideSq));
+    if (ratio > worst) worst = ratio;
+  }
+  return worst;
+}
+
+/* Squarified treemap (Bruls et al.): area is proportional to size, aspect ratios stay near 1. */
+function squarify(values, box) {
+  const rects = values.map(() => ({ x: box.x, y: box.y, w: 0, h: 0 }));
+  const total = values.reduce((a, b) => a + b, 0);
+  if (!values.length || !(total > 0) || !(box.w > 0) || !(box.h > 0)) return rects;
+  const scale = (box.w * box.h) / total;
+  const nodes = values
+    .map((value, index) => ({ index, area: Math.max(value * scale, 1) }))
+    .sort((a, b) => b.area - a.area);
+  let x = box.x, y = box.y, w = box.w, h = box.h, cursor = 0;
+  while (cursor < nodes.length) {
+    if (w <= 0.01 || h <= 0.01) break;
+    const side = Math.min(w, h);
+    const row = [];
+    let rowArea = 0, worst = Infinity;
+    while (cursor < nodes.length) {
+      const node = nodes[cursor];
+      const nextArea = rowArea + node.area;
+      const nextWorst = worstRatio([...row, node], nextArea, side);
+      if (row.length && nextWorst > worst) break;
+      row.push(node); rowArea = nextArea; worst = nextWorst; cursor += 1;
+    }
+    if (w <= h) {
+      const bandHeight = rowArea / w;
+      let offset = x;
+      for (const node of row) {
+        const nodeWidth = node.area / bandHeight;
+        rects[node.index] = { x: offset, y, w: nodeWidth, h: bandHeight };
+        offset += nodeWidth;
+      }
+      y += bandHeight; h -= bandHeight;
+    } else {
+      const columnWidth = rowArea / h;
+      let offset = y;
+      for (const node of row) {
+        const nodeHeight = node.area / columnWidth;
+        rects[node.index] = { x, y: offset, w: columnWidth, h: nodeHeight };
+        offset += nodeHeight;
+      }
+      x += columnWidth; w -= columnWidth;
+    }
+  }
+  return rects;
+}
+
+function shorten(ctx, text, maxWidth) {
+  const label = String(text ?? '');
+  if (maxWidth <= 10) return '';
+  if (ctx.measureText(label).width <= maxWidth) return label;
+  let cut = label;
+  while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) cut = cut.slice(0, -1);
+  return cut.length > 1 ? `${cut}…` : '';
+}
+
+function drawMapImage(canvas, model) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+  const W = canvas.width, H = canvas.height, pad = 44;
+  ctx.fillStyle = '#12151a';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#f1f4f8';
+  ctx.font = '700 34px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('AICleanUp — space map', pad, 62);
+  ctx.fillStyle = '#98a1ad';
+  ctx.font = '500 16px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(`${model.items.length} of ${model.shown} files · ${bytes(model.total)} · ${model.filters}`, pad, 94);
+
+  let legendX = pad;
+  const legendY = 130;
+  ctx.font = '500 15px "Segoe UI", system-ui, sans-serif';
+  for (const entry of model.categories.slice(0, 6)) {
+    const label = `${entry.category} ${bytes(entry.size)}`;
+    ctx.fillStyle = colors[entry.category] || '#527fad';
+    ctx.fillRect(legendX, legendY - 12, 14, 14);
+    ctx.fillStyle = '#c6ccd4';
+    ctx.fillText(label, legendX + 21, legendY);
+    legendX += 21 + ctx.measureText(label).width + 26;
+  }
+
+  const box = { x: pad, y: 158, w: W - pad * 2, h: H - 158 - 76 };
+  const rects = squarify(model.items.map(item => Math.max(item.size || 0, 1)), box);
+  model.items.forEach((item, index) => {
+    const r = rects[index];
+    if (!r || r.w <= 0 || r.h <= 0) return;
+    ctx.fillStyle = colors[item.category] || '#527fad';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = 'rgba(10,12,16,0.55)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, Math.max(r.w - 1, 0), Math.max(r.h - 1, 0));
+    if (r.w > 84 && r.h > 30) {
+      ctx.fillStyle = '#f6f9ff';
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      const name = shorten(ctx, item.name, r.w - 14);
+      if (name) ctx.fillText(name, r.x + 7, r.y + 20);
+      if (r.h > 46) {
+        ctx.fillStyle = 'rgba(246,249,255,0.78)';
+        ctx.font = '500 12px monospace';
+        ctx.fillText(bytes(item.size), r.x + 7, r.y + 36);
+      }
+    }
+  });
+
+  ctx.fillStyle = '#78818d';
+  ctx.font = '500 13px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(`Generated ${model.generated.toLocaleString()} · review only — nothing was changed`, pad, H - 26);
+  return true;
+}
+
+function pdfRgb(hex) {
+  const raw = String(hex || '').replace('#', '');
+  const full = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw;
+  const value = parseInt(full, 16);
+  if (!full.match(/^[0-9a-f]{6}$/i) || Number.isNaN(value)) return [0.32, 0.5, 0.68];
+  return [((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255];
+}
+
+function pdfString(text) {
+  return String(text ?? '').replace(/[^\x20-\x7e]/g, '?').replace(/[\\()]/g, c => `\\${c}`);
+}
+
+function assemblePdf(objects) {
+  let out = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach((body, index) => {
+    offsets.push(out.length);
+    out += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const startxref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) out += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+  return out;
+}
+
+/* Vector PDF: the same squarified geometry as the PNG, written without any dependency. */
+function buildMapPdf(model) {
+  const W = 842, H = 595, pad = 34;   // A4 landscape in points
+  const parts = [];
+  const fill = (rgb) => `${rgb[0].toFixed(3)} ${rgb[1].toFixed(3)} ${rgb[2].toFixed(3)} rg`;
+  parts.push(fill([0.071, 0.082, 0.102]), `0 0 ${W} ${H} re f`);
+  parts.push('BT /F1 21 Tf 0.94 0.96 0.98 rg', `${pad} ${H - 46} Td (AICleanUp - space map) Tj ET`);
+  parts.push('BT /F1 9 Tf 0.60 0.64 0.69 rg',
+    `${pad} ${H - 62} Td (${pdfString(`${model.items.length} of ${model.shown} files | ${bytes(model.total)} | ${model.filters}`)}) Tj ET`);
+
+  let legendX = pad;
+  const legendY = H - 84;
+  for (const entry of model.categories.slice(0, 6)) {
+    const label = `${entry.category} ${bytes(entry.size)}`;
+    parts.push(fill(pdfRgb(colors[entry.category] || '#527fad')), `${legendX} ${legendY - 8} 9 9 re f`);
+    parts.push('BT /F1 8 Tf 0.78 0.81 0.85 rg', `${legendX + 13} ${legendY - 7} Td (${pdfString(label)}) Tj ET`);
+    legendX += 13 + label.length * 4.4 + 18;
+  }
+
+  const box = { x: pad, y: 112, w: W - pad * 2, h: H - 112 - 66 };
+  const rects = squarify(model.items.map(item => Math.max(item.size || 0, 1)), box);
+  model.items.forEach((item, index) => {
+    const r = rects[index];
+    if (!r || r.w <= 0 || r.h <= 0) return;
+    const y = H - (r.y + r.h);
+    parts.push(fill(pdfRgb(colors[item.category] || '#527fad')), `${r.x.toFixed(2)} ${y.toFixed(2)} ${r.w.toFixed(2)} ${r.h.toFixed(2)} re f`);
+    parts.push('0.078 0.094 0.118 RG 0.5 w', `${r.x.toFixed(2)} ${y.toFixed(2)} ${r.w.toFixed(2)} ${r.h.toFixed(2)} re S`);
+    if (r.w > 62 && r.h > 18) {
+      const room = Math.max(1, Math.floor((r.w - 8) / 3.9));
+      const name = item.name.length > room ? `${item.name.slice(0, Math.max(room - 3, 1))}...` : item.name;
+      parts.push('BT /F1 6.5 Tf 0.97 0.98 1 rg', `${(r.x + 4).toFixed(2)} ${(H - r.y - 8).toFixed(2)} Td (${pdfString(name)}) Tj ET`);
+    }
+  });
+
+  parts.push('BT /F1 8 Tf 0.47 0.5 0.55 rg',
+    `${pad} 34 Td (${pdfString(`Generated ${model.generated.toLocaleString()} | review only - nothing was changed`)}) Tj ET`);
+
+  const stream = parts.join('\n');
+  return assemblePdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]);
+}
+
+function exportMapPng() {
+  const model = mapExportModel();
+  if (!model.items.length) { toast('Nothing in the current view to map'); return; }
+  let canvas = null, drawn = false;
+  try {
+    canvas = document.createElement('canvas');
+    canvas.width = 1600; canvas.height = 900;
+    drawn = drawMapImage(canvas, model);
+  } catch { drawn = false; }
+  if (!drawn || !canvas || typeof canvas.toBlob !== 'function') { toast('PNG export needs a browser canvas — the PDF export still works'); return; }
+  canvas.toBlob((blob) => {
+    if (!blob) { toast('PNG export failed'); return; }
+    downloadFile(blob, `aicleanup-map-${stamp()}.png`);
+    toast('Space map exported as PNG — nothing was changed');
+  }, 'image/png');
+}
+
+function exportMapPdf() {
+  const model = mapExportModel();
+  if (!model.items.length) { toast('Nothing in the current view to map'); return; }
+  downloadFile(new Blob([buildMapPdf(model)], { type: 'application/pdf' }), `aicleanup-map-${stamp()}.pdf`);
+  $('#statusText').textContent = `Space map exported as PDF · ${model.items.length} blocks`;
+  toast('Space map exported as PDF — nothing was changed');
 }
 
 // ---------------------------------------------------------------- inspector
@@ -329,7 +721,8 @@ function renderBranchInfo() {
   const inBranch = state.items.filter(i => inFolder(i, folder));
   const total = inBranch.reduce((n,i)=>n+i.size,0);
   const allTotal = state.items.reduce((n,i)=>n+i.size,0) || 1;
-  const eligible = inBranch.filter(i=>i.can_delete).reduce((n,i)=>n+i.size,0);
+  const eligibleRows = inBranch.filter(i=>i.can_delete);
+  const eligible = eligibleRows.reduce((n,i)=>n+i.size,0);
   const owners = [...new Set(inBranch.map(i=>i.source).filter(Boolean))].slice(0,3).join(', ');
   const largest = [...inBranch].sort((a,b)=>b.size-a.size).slice(0,4);
   host.innerHTML = `<div class="info-title">${esc(baseName(folder))}</div>
@@ -341,7 +734,10 @@ function renderBranchInfo() {
       <dt>Cleanup-eligible</dt><dd>${bytes(eligible)}</dd>
       <dt>Owner</dt><dd>${esc(owners||'—')}</dd>
     </dl>
-    ${largest.length?`<ul class="info-list">${largest.map(i=>`<li title="${esc(i.path)}"><span>${esc(i.name)}</span><b>${bytes(i.size)}</b></li>`).join('')}</ul>`:''}`;
+    ${largest.length?`<ul class="info-list">${largest.map(i=>`<li title="${esc(i.path)}"><span>${esc(i.name)}</span><b>${bytes(i.size)}</b></li>`).join('')}</ul>`:''}
+    <div class="info-actions"><button class="info-btn" id="branchSelect" ${eligibleRows.length?'':'disabled'} title="Select every cleanup-eligible file under this folder in one pass">Select eligible here<small>${eligibleRows.length}</small></button></div>`;
+  const branchSelect = $('#branchSelect');
+  if (branchSelect) branchSelect.addEventListener('click', () => bulkEligible(folder));
 }
 
 function renderRuntimes() {
@@ -448,6 +844,12 @@ function renderSummary(all, shown) {
     ? `${groups.length} group${groups.length===1?'':'s'} · ${groups.reduce((n,g)=>n+g.items.length,0)} files · nothing changes on disk`
     : $('#shownCount').textContent;
   $('#filterNote').textContent = `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} files · ${filterDescription()}`;
+  const eligibleInView = shown.filter(x => x.can_delete);
+  $('#selectEligible').disabled = state.busy || duplicatesView || !eligibleInView.length;
+  $('#selectEligible').textContent = state.folder ? 'Select eligible in this folder' : 'Select eligible in view';
+  $('#selectEligible').title = state.folder
+    ? `Select every cleanup-eligible file under ${state.folder} in one pass`
+    : 'Select every cleanup-eligible file in the current view in one pass';
 }
 
 function render() {
@@ -462,6 +864,7 @@ function render() {
   renderBranchInfo();
   renderRuntimes();
   renderStats();
+  renderScopes();
 }
 
 // ---------------------------------------------------------------- helpers
@@ -496,9 +899,19 @@ function scanRoots() {
   return [...roots.values()].sort((a,b)=>b.size-a.size);
 }
 
+function setOverrideRecent(value) {
+  const next = !!value;
+  state.overrideRecent = next;
+  $('#overrideRecent').checked = next;
+  if (!next) state.items.forEach(x => { if (!x.can_delete) x.selected = false; });
+  render();
+  if (next) toast('Age override enabled — recent files can now be selected; model weights stay blocked');
+}
+
 function clearFilters() {
   state.category = 'all'; state.risk = 'all'; state.folder = null; state.runtime = null; state.query = '';
   $('#search').value = '';
+  clearSelectNote();
   render();
 }
 
@@ -623,6 +1036,8 @@ function setBusy(on, text) {
   $('#hfPreviewBtn').disabled = on || !state.items.some(x=>x.runtime==='huggingface');
   $('#restoreBtn').disabled = on || !state.audits.some(a=>a.restorable>0);
   $('#viewDuplicates').disabled = on || !duplicateGroups().length;
+  $('#ignoreBtn').disabled = on || !state.items.length;
+  $('#selectEligible').disabled = on || state.view === 'duplicates' || !filtered().some(x=>x.can_delete);
   $('#progress').classList.toggle('running', on);
   $('#statusText').textContent = text || (on ? 'Scanning…' : 'Ready');
   $('.status-light').classList.toggle('working', on);
@@ -642,6 +1057,7 @@ async function runScan() {
     state.category = 'all'; state.risk = 'all'; state.folder = null; state.runtime = null; state.query = '';
     state.selectedId = null; state.duplicateGroups = null; state.expanded = new Set(); state.view = 'files';
     $('#search').value = '';
+    clearSelectNote();
     if (data.warnings?.length) { $('#warningLine').textContent = data.warnings.join(' '); $('#warningLine').hidden = false; }
     $('#statusText').textContent = `Scan complete · ${state.items.length.toLocaleString()} files found`;
     await refreshRuntimes();
@@ -867,12 +1283,14 @@ $('#selectVisible').addEventListener('change', e => {
   filtered().filter(x=>selectable(x) && (!activeAction || x.cleanup_action===activeAction)).forEach(x => { x.selected = e.target.checked; });
   render();
 });
-$('#overrideRecent').addEventListener('change', e => {
-  state.overrideRecent = e.target.checked;
-  if (!state.overrideRecent) state.items.forEach(x => { if (!x.can_delete) x.selected = false; });
-  render();
-  if (state.overrideRecent) toast('Age override enabled — recent files can now be selected; model weights stay blocked');
-});
+$('#overrideRecent').addEventListener('change', e => setOverrideRecent(e.target.checked));
+$('#scopeSave').addEventListener('click', openScopeEditor);
+$('#scopeDelete').addEventListener('click', deleteScope);
+$('#scopeSelect').addEventListener('change', e => applyScope(e.target.value));
+$('#scopeConfirm').addEventListener('click', commitScope);
+$('#selectEligible').addEventListener('click', () => bulkEligible());
+$('#exportMapPng').addEventListener('click', exportMapPng);
+$('#exportMapPdf').addEventListener('click', exportMapPdf);
 
 $('#treemapCanvas').addEventListener('click', e => {
   if (suppressMapClick) { suppressMapClick = false; return; }
@@ -931,6 +1349,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
+state.scopes = readScopes();
 render();
 refreshAudits();
 runScan();

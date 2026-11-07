@@ -34,6 +34,8 @@ const fixtures = [
   { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
   { id: 'b', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/notes.json', root: '/home/u/.cache/hf/hub', name: 'notes.json', size: 2048, modified: daysAgo(10), category: 'Caches', risk: 'safe', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
   { id: 'c', path: '/home/u/.cache/hf/hub/blobs/fresh-partial', root: '/home/u/.cache/hf/hub', name: 'fresh-partial', size: 1024, modified: daysAgo(1), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: false, age_blocked: true, blocked_reason: 'Modified within the last 7 days; blocked unless you explicitly override the age rule.' },
+  { id: 'e', path: '/home/u/.ollama/models/blobs/old-partial', root: '/home/u/.ollama/models', name: 'old-partial', size: 512, modified: daysAgo(20), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
+  { id: 'f', path: '/home/u/.ollama/models/manifests/registry.ollama.ai/library/qwen2/7b', root: '/home/u/.ollama/models', name: 'qwen2:7b', size: 1536, modified: daysAgo(40), category: 'Ollama models', risk: 're-download', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'ollama-rm', can_delete: true, age_blocked: false, selected: false, model: true, logical_size: 4096 },
 ];
 
 const calls = [];
@@ -67,6 +69,15 @@ window.eval(appJs);
 const $ = (selector) => window.document.querySelector(selector);
 const $$ = (selector) => [...window.document.querySelectorAll(selector)];
 const click = (element) => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+function clearSelection() {
+  const boxes = () => $$('#fileRows .file-check');
+  for (let guard = 0; guard < 20 && boxes().some((box) => box.checked); guard += 1) {
+    const box = boxes().find((entry) => entry.checked);
+    box.checked = false;
+    box.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+}
+
 let failures = 0;
 function check(label, condition, detail = '') {
   if (!condition) failures += 1;
@@ -77,9 +88,9 @@ setTimeout(async () => {
   check('scan request issued', calls.some((call) => call.url === '/api/scan'));
   check('table lists every finding', $$('#fileRows .file-row').length === fixtures.length, $$('#fileRows .file-row').length);
   check('folder tree lists nodes', $$('#folderTree .folder-row').length >= 3, $$('#folderTree .folder-row').length);
-  check('tree root shows scan total', $('#folderTree .folder-scope .folder-size').textContent === '7.0 KB', $('#folderTree .folder-scope .folder-size').textContent);
+  check('tree root shows scan total', $('#folderTree .folder-scope .folder-size').textContent === '9.0 KB', $('#folderTree .folder-scope .folder-size').textContent);
   check('risk filter chips', $$('#riskFilters .filter-chip').length === 5, $$('#riskFilters .filter-chip').length);
-  check('category filters include all + categories', $$('#treeChildren .tree-child').length === 4, $$('#treeChildren .tree-child').length);
+  check('category filters include all + categories', $$('#treeChildren .tree-child').length === 5, $$('#treeChildren .tree-child').length);
   check('statistics panel populated', $('#statsPanel').textContent.includes('Findings'));
   check('space map blocks', $$('#treemapCanvas .map-block').length === fixtures.length, $$('#treemapCanvas .map-block').length);
   check('restore enabled by audits', $('#restoreBtn').disabled === false);
@@ -183,6 +194,111 @@ setTimeout(async () => {
   click($('#viewDuplicates'));
   check('duplicate view can be reopened', $$('#fileRows .dup-group').length === 1);
   click($('#viewFiles'));
+
+  // bulk selection
+  click($('#clearFilters'));
+  clearSelection();
+  check('selection starts empty for the bulk pass', $('#selectedCount').textContent === '0', $('#selectedCount').textContent);
+  check('bulk button names the current scope', $('#selectEligible').textContent === 'Select eligible in view', $('#selectEligible').textContent);
+  check('bulk button enabled with eligible rows', $('#selectEligible').disabled === false);
+
+  click($('#selectEligible'));
+  check('bulk select picks every eligible trash file', $('#selectedCount').textContent === '2', $('#selectedCount').textContent);
+  check('bulk select skips model weights', $$('#fileRows .file-row').find((row) => row.dataset.id === 'a').querySelector('.file-check').checked === false);
+  check('bulk select leaves the ollama pass alone', $$('#fileRows .file-row').find((row) => row.dataset.id === 'f').querySelector('.file-check').checked === false);
+  check('bulk select reports the other action', $('#selectNote').textContent.includes('1 ollama rm left for a separate pass'), $('#selectNote').textContent);
+  check('bulk select reports the age rule', $('#selectNote').textContent.includes('1 recent skipped (7-day rule)'), $('#selectNote').textContent);
+  check('bulk select reports protected weights', $('#selectNote').textContent.includes('1 runtime-managed or blocked'), $('#selectNote').textContent);
+  check('bulk select keeps one action usable', $('#cleanBtn').disabled === false && $('#cleanBtn').textContent.includes('Trash'), $('#cleanBtn').textContent);
+
+  click($('#clearFilters'));
+  check('clearing filters drops the bulk note', $('#selectNote').textContent === '', $('#selectNote').textContent);
+  clearSelection();
+  click($$('#folderTree .folder-row').find((row) => row.dataset.path === '/home/u/.ollama/models'));
+  check('bulk button follows the folder scope', $('#selectEligible').textContent === 'Select eligible in this folder', $('#selectEligible').textContent);
+  check('branch info offers a bulk select', $$('#branchSelect').length === 1);
+  click($('#branchSelect'));
+  check('folder bulk selects only that branch', $('#selectedCount').textContent === '1', $('#selectedCount').textContent);
+  check('folder bulk takes the dominant action', $$('#fileRows .file-row').find((row) => row.dataset.id === 'f').querySelector('.file-check').checked === true);
+  check('folder bulk reports the trash leftovers', $('#selectNote').textContent.includes('1 Trash left for a separate pass'), $('#selectNote').textContent);
+  check('folder bulk switches the cleanup action', $('#cleanBtn').textContent.includes('Ollama'), $('#cleanBtn').textContent);
+
+  // space map export
+  click($('#clearFilters'));
+  const canvasCalls = [];
+  window.HTMLCanvasElement.prototype.getContext = function () {
+    return {
+      fillStyle: '#000', strokeStyle: '#000', lineWidth: 1, font: '', textBaseline: 'alphabetic',
+      fillRect: (...args) => canvasCalls.push(['fillRect', ...args]),
+      strokeRect: (...args) => canvasCalls.push(['strokeRect', ...args]),
+      fillText: (...args) => canvasCalls.push(['fillText', ...args]),
+      measureText: (text) => ({ width: String(text).length * 7 }),
+    };
+  };
+  window.HTMLCanvasElement.prototype.toBlob = function (callback, type) {
+    callback(new window.Blob(['fake-png'], { type: type || 'image/png' }));
+  };
+  const mapBlobs = exported.length;
+  click($('#exportMapPng'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check('PNG export creates one blob', exported.length === mapBlobs + 1, exported.length);
+  check('PNG export is an image blob', exported[mapBlobs] && exported[mapBlobs].type === 'image/png', exported[mapBlobs] && exported[mapBlobs].type);
+  check('PNG export draws a block per file', canvasCalls.filter((call) => call[0] === 'fillRect').length > fixtures.length, canvasCalls.filter((call) => call[0] === 'fillRect').length);
+  check('PNG export titles the image', canvasCalls.some((call) => call[0] === 'fillText' && String(call[1]).includes('space map')));
+  check('PNG export labels the largest file', canvasCalls.some((call) => call[0] === 'fillText' && String(call[1]).includes('model.safetensors')));
+
+  const pdfBlobs = exported.length;
+  click($('#exportMapPdf'));
+  check('PDF export creates one blob', exported.length === pdfBlobs + 1, exported.length);
+  if (exported[pdfBlobs]) {
+    const pdf = await exported[pdfBlobs].text();
+    check('PDF blob is a PDF', exported[pdfBlobs].type === 'application/pdf', exported[pdfBlobs].type);
+    check('PDF opens and closes correctly', pdf.startsWith('%PDF-1.4') && pdf.endsWith('%%EOF\n'), pdf.slice(0, 10));
+    check('PDF declares a landscape page', pdf.includes('/MediaBox [0 0 842 595]'));
+    check('PDF draws a rectangle per block', (pdf.match(/ re f/g) || []).length >= fixtures.length, (pdf.match(/ re f/g) || []).length);
+    check('PDF labels the largest file', pdf.includes('model.safetensors'));
+    check('PDF writes a resolving xref', /startxref\n\d+\n%%EOF\n$/.test(pdf));
+    check('PDF notes that nothing changed', pdf.includes('nothing was changed'));
+  }
+
+  // scan scopes
+  check('scope panel starts empty', $$('#scopeSelect option').length === 1, $$('#scopeSelect option').length);
+  check('scope note invites a first save', $('#scopeNote').textContent.includes('Save a scope'), $('#scopeNote').textContent);
+  check('scope delete disabled while empty', $('#scopeDelete').disabled === true);
+  $('#workspace').value = '/home/u/projects/old-app';
+  $('#includeModels').checked = true;
+  click($('#scopeSave'));
+  check('scope dialog opens', $('#scopeDialog').hasAttribute('open'));
+  check('scope dialog suggests a folder name', $('#scopeName').value === 'old-app', $('#scopeName').value);
+  check('scope dialog summarises the options', $('#scopeSummary').textContent.includes('model weights on'), $('#scopeSummary').textContent);
+  $('#scopeName').value = 'Old app folders';
+  click($('#scopeConfirm'));
+  check('scope dialog closes after saving', !$('#scopeDialog').hasAttribute('open'));
+  const storedScopes = JSON.parse(window.localStorage.getItem('aicleanup.scopes') || '[]');
+  check('scope saved to browser storage', storedScopes.length === 1 && storedScopes[0].name === 'Old app folders', window.localStorage.getItem('aicleanup.scopes'));
+  check('stored scope keeps the folder', storedScopes[0] && storedScopes[0].workspace === '/home/u/projects/old-app', storedScopes[0] && storedScopes[0].workspace);
+  check('scope select lists the saved scope', $$('#scopeSelect option').length === 2, $$('#scopeSelect option').length);
+  check('scope note describes the saved scope', $('#scopeNote').textContent.includes('old-app'), $('#scopeNote').textContent);
+  check('scope delete enabled after saving', $('#scopeDelete').disabled === false);
+
+  const scansBefore = calls.filter((call) => call.url === '/api/scan').length;
+  $('#workspace').value = '';
+  $('#includeModels').checked = false;
+  const scopeSelect = $('#scopeSelect');
+  scopeSelect.value = 'Old app folders';
+  scopeSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  check('applying a scope restores the folder', $('#workspace').value === '/home/u/projects/old-app', $('#workspace').value);
+  check('applying a scope restores the options', $('#includeModels').checked === true);
+  check('applying a scope rescans', calls.filter((call) => call.url === '/api/scan').length === scansBefore + 1, calls.filter((call) => call.url === '/api/scan').length);
+  const scopeScan = JSON.parse(calls.filter((call) => call.url === '/api/scan').pop().body);
+  check('scope rescan posts the saved folder', scopeScan.workspace === '/home/u/projects/old-app', scopeScan.workspace);
+  check('scope rescan posts the saved options', scopeScan.include_models === true, scopeScan.include_models);
+
+  click($('#scopeDelete'));
+  check('deleting a scope clears storage', JSON.parse(window.localStorage.getItem('aicleanup.scopes') || '[]').length === 0, window.localStorage.getItem('aicleanup.scopes'));
+  check('scope panel returns to the empty state', $$('#scopeSelect option').length === 1, $$('#scopeSelect option').length);
+  check('scope delete disabled after deleting', $('#scopeDelete').disabled === true);
 
   // ignore-rule editor
   check('ignore button enabled after scan', $('#ignoreBtn').disabled === false);
