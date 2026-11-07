@@ -26,6 +26,12 @@ For a trusted reverse-proxy preview only, bind all interfaces explicitly with `-
 - Model weights are excluded by default. Enable **Include model weights** to inspect recognized weight files; they are always unselected initially.
 - Only obvious cache files are preselected. App data, developer histories/configuration, superseded outputs, and model weights require explicit selection. All choices are visible in the file list and space totals; review paths before confirming cleanup.
 
+## Supported client locations
+
+The scanner derives Windows roaming/local roots from `%APPDATA%` and `%LOCALAPPDATA%`, including ChatGPT and Claude Store/MSIX user-data subtrees, Copilot data and its `INetCache` folder, Comet, Gemini Desktop, DeepSeek, Grok, AnythingLLM, Cherry Studio, and Jan. On macOS it checks the corresponding `~/Library/Application Support` folders and discovers ChatGPT sandbox data under `~/Library/Containers/*/Data/Library/Application Support/ChatGPT`. Existing ChatGPT, Claude, Replit, Codex, and local-model paths remain supported.
+
+Installer binaries and `Program Files`/`AnthropicClaude/app-*` directories are intentionally not scanned. The name `LocalCache` by itself does not make a folder eligible for cleanup; only recognized cache subdirectories are categorized and preselected as caches. App data such as IndexedDB remains unselected for review.
+
 ## Cleanup safety
 
 AICleanUp does not permanently delete files. Selected files are moved to the operating system Trash/Recycle Bin, and an audit manifest is written to `~/.aicleanup/audit/cleanup_audit_<timestamp>.json`. On Linux, the XDG Trash layout is used directly. On Windows and macOS, install the optional `send2trash` dependency to route files to the native bin:
