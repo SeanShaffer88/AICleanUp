@@ -293,6 +293,56 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("operating system Trash", reasons)
 
 
+class ModelEntryScanTests(unittest.TestCase):
+    """A scan should name the model behind a folder and flag its current variant."""
+
+    def test_lmstudio_variants_share_one_entry_and_newest_is_current(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "models"
+            repo = root / "lmstudio-community" / "Demo-GGUF"
+            repo.mkdir(parents=True)
+            older = repo / "Demo-Q4_K_M.gguf"
+            newer = repo / "Demo-Q8_0.gguf"
+            older.write_bytes(b"a" * 512)
+            newer.write_bytes(b"b" * 900)
+            now = time.time()
+            os.utime(older, (now - 86400 * 40, now - 86400 * 40))
+            os.utime(newer, (now - 86400 * 20, now - 86400 * 20))
+            roots = [{"label": "LM Studio models", "category": "Model weights", "path": root,
+                      "models": True, "runtime": "lmstudio", "workspace": False}]
+            with patch.object(aicleanup, "running_ai_processes", return_value=[]):
+                items, warnings = aicleanup.scan(roots, include_models=True)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(items), 2)
+        self.assertEqual({item["model_entry"] for item in items}, {"lmstudio-community/Demo-GGUF"})
+        self.assertEqual({item["variant"] for item in items}, {"Q4_K_M", "Q8_0"})
+        self.assertEqual({item["entry_count"] for item in items}, {2})
+        self.assertEqual({item["entry_size"] for item in items}, {512 + 900})
+        current = [item for item in items if item.get("latest")]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["variant"], "Q8_0")
+        self.assertEqual(current[0]["latest_by"], "modified")
+        self.assertFalse(any(item["can_delete"] for item in items))
+
+    def test_weights_stay_protected_with_their_entry_named(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "models"
+            repo = root / "acme" / "tiny"
+            repo.mkdir(parents=True)
+            (repo / "tiny-F16.gguf").write_bytes(b"c" * 256)
+            roots = [{"label": "LM Studio models", "category": "Model weights", "path": root,
+                      "models": True, "runtime": "lmstudio", "workspace": False}]
+            with patch.object(aicleanup, "running_ai_processes", return_value=[]):
+                items, _ = aicleanup.scan(roots, include_models=True)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["model_entry"], "acme/tiny")
+        self.assertEqual(items[0]["variant"], "F16")
+        self.assertFalse(items[0]["can_delete"])
+        self.assertEqual(items[0]["cleanup_action"], "none")
+
+
 if __name__ == "__main__":
     unittest.main()
 

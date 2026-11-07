@@ -127,6 +127,59 @@ class OllamaCommandTests(unittest.TestCase):
                                     capture_output=True, text=True, timeout=45, check=False)
 
 
+class RuntimeInventoryVerifierTests(unittest.TestCase):
+    """The verifier has to name the process, not merely report "something is running"."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.store = temp.name
+        self.model = os.path.join(self.store, "publisher", "repo", "model.gguf")
+        self.items = [{
+            "runtime": "lmstudio", "model": True, "size": 2048, "root": self.store,
+            "path": self.model, "model_entry": "publisher/repo",
+        }]
+
+    def test_in_use_names_the_process_holding_the_store(self):
+        processes = [{"runtime": "lmstudio", "pid": 4242, "name": "LM Studio"}]
+        entry = runtime_support.runtime_inventory(self.items, processes, {})[0]
+        self.assertEqual(entry["in_use"], [{"pid": 4242, "name": "LM Studio"}])
+        self.assertEqual(entry["entries"], 1)
+
+    def test_processes_of_other_runtimes_are_not_blamed(self):
+        processes = [{"runtime": "ollama", "pid": 7, "name": "ollama"}]
+        entry = runtime_support.runtime_inventory(self.items, processes, {})[0]
+        self.assertEqual(entry["in_use"], [])
+
+    def test_unavailable_process_list_stays_unknown(self):
+        entry = runtime_support.runtime_inventory(self.items, None, None)[0]
+        self.assertIsNone(entry["in_use"])
+
+    def test_open_files_name_the_owner_of_the_store(self):
+        owned = os.path.normcase(os.path.realpath(self.model))
+        opened = {
+            owned: {"pid": 99, "name": "LM Studio"},
+            os.path.normcase("/somewhere/else.db"): {"pid": 12, "name": "Unrelated"},
+        }
+        entry = runtime_support.runtime_inventory(self.items, [], opened)[0]
+        self.assertEqual(entry["handles"], [{"path": owned, "pid": 99, "name": "LM Studio"}])
+
+    def test_handle_list_is_capped(self):
+        owned = os.path.normcase(os.path.realpath(self.store))
+        opened = {os.path.join(owned, f"file-{index}.gguf"): {"pid": index, "name": "LM Studio"} for index in range(9)}
+        entry = runtime_support.runtime_inventory(self.items, [], opened)[0]
+        self.assertEqual(len(entry["handles"]), 5)
+
+    def test_entry_count_is_reported_per_runtime(self):
+        self.items.append({
+            "runtime": "lmstudio", "model": True, "size": 1024, "root": self.store,
+            "path": self.model.replace("model.gguf", "model-q8.gguf"), "model_entry": "publisher/repo",
+        })
+        entry = runtime_support.runtime_inventory(self.items, [], {})[0]
+        self.assertEqual(entry["models"], 2)
+        self.assertEqual(entry["entries"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

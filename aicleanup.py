@@ -19,8 +19,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from runtime_support import (
-    ScanCancelled, exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
-    runtime_inventory,
+    ScanCancelled, exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, huggingface_ref_revision,
+    is_model_weight_path, is_ollama_partial, model_entry_for, ollama_model_items, runtime_inventory,
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
 
@@ -174,7 +174,7 @@ def scan(roots, include_models=False):
     processes = running_ai_processes()
     if processes is None:
         warnings.append("Process checks are unavailable; destructive actions will be disabled until dependencies are installed.")
-    seen_paths = set()
+    seen_paths = {}
     stop_scan = False
     # Give an explicitly selected workspace first claim on overlapping paths so
     # its scratch/backup findings retain the more specific category.
@@ -196,6 +196,22 @@ def scan(roots, include_models=False):
             continue
         patterns = load_ignore(root)
         resolved_root = root
+        refs_cache = {}
+
+        def current_revision(link_path):
+            """Hugging Face revision that refs/main points at for this snapshot link."""
+            text = str(link_path)
+            marker = f"{os.sep}snapshots{os.sep}"
+            if marker not in text:
+                return None
+            repo = Path(text.split(marker)[0])
+            key = str(repo)
+            if key not in refs_cache:
+                try:
+                    refs_cache[key] = (repo / "refs/main").read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    refs_cache[key] = None
+            return refs_cache[key]
         for current, dirs, files in os.walk(root, followlinks=False):
             current_path = Path(current)
             # Do not cross symlinked or excluded directories.
@@ -235,7 +251,15 @@ def scan(roots, include_models=False):
                         file_stat = os.stat(p, follow_symlinks=False)
                         if not stat.S_ISREG(file_stat.st_mode): continue
                         canonical_path = str(p.resolve(strict=True))
-                    if canonical_path in seen_paths: continue
+                    if canonical_path in seen_paths:
+                        # A blob shared by several revisions is counted once. When one of
+                        # those revisions is the current one (refs/main), report that path.
+                        previous = seen_paths[canonical_path]
+                        revision = current_revision(p) if link_target else None
+                        if revision and f"{os.sep}{revision}{os.sep}" in str(p) and f"{os.sep}{revision}{os.sep}" not in previous["path"]:
+                            previous.update({"path": str(p), "name": p.name, "link_target": str(link_target)})
+                            seen_paths[str(canonical_path)] = previous
+                        continue
                     partial = runtime == "ollama" and is_ollama_partial(p)
                     if runtime == "ollama" and not partial:
                         # Ollama blobs are shared content-addressed layers, never file-level candidates.
@@ -270,15 +294,16 @@ def scan(roots, include_models=False):
                         guidance = "Use `ollama rm model:tag`; shared blobs are protected."
                     elif partial:
                         guidance = "Orphaned partial download. Requires 7-day age and Ollama stopped."
-                    findings.append({"id": uuid.uuid4().hex, "path": str(p), "name": p.name, "root": str(root),
+                    finding = {"id": uuid.uuid4().hex, "path": str(p), "name": p.name, "root": str(root),
                                      "link_target": str(link_target) if link_target else None,
                                      "source": label, "runtime": runtime, "category": cat, "size": file_stat.st_size,
                                      "modified": datetime.fromtimestamp(file_stat.st_mtime).astimezone().isoformat(timespec="minutes"),
                                      "model": bool(is_weight), "risk": risk, "cleanup_action": action,
                                      "can_delete": can_delete, "blocked_reason": reason, "guidance": guidance,
                                      "age_blocked": age_blocked,
-                                     "selected": cat == "Caches" and can_delete})
-                    seen_paths.add(canonical_path)
+                                     "selected": cat == "Caches" and can_delete}
+                    findings.append(finding)
+                    seen_paths[canonical_path] = finding
                 except (OSError, PermissionError, RuntimeError):
                     continue
             if stop_scan:
@@ -290,6 +315,7 @@ def scan(roots, include_models=False):
                     findings.extend(ollama_model_items(Path(entry["path"]).resolve(strict=True)))
                 except OSError:
                     continue
+    annotate_model_entries(findings)
     # Flag versioned siblings as likely historical variants; never auto-select them.
     groups = {}
     for f in findings:
@@ -304,6 +330,49 @@ def scan(roots, include_models=False):
                 f["selected"] = False
     findings.sort(key=lambda item: item["size"], reverse=True)
     return findings, warnings
+
+
+def annotate_model_entries(findings):
+    """Name each model entry and flag its current tag, revision, or newest variant.
+
+    The strong signals are runtime-owned: an Ollama manifest tagged `latest`, or a
+    Hugging Face `refs/main` pointer naming a revision folder. LM Studio has no
+    pointer, so its newest file per publisher/repo is marked and labelled as such.
+    """
+    grouped = {}
+    for item in findings:
+        runtime = item.get("runtime")
+        if not runtime:
+            continue
+        entry, variant = model_entry_for(Path(item["path"]), Path(item["root"]), runtime)
+        if not entry:
+            continue
+        item["model_entry"] = entry
+        if variant:
+            item["variant"] = variant
+        grouped.setdefault((runtime, entry, str(item["root"])), []).append(item)
+    for (runtime, entry, root), group in grouped.items():
+        entry_size = sum(int(item.get("logical_size") or item.get("size") or 0) for item in group)
+        for item in group:
+            item["entry_size"] = entry_size
+            item["entry_count"] = len(group)
+        latest, basis = None, None
+        if runtime == "huggingface":
+            revision = huggingface_ref_revision(root, entry)
+            if revision:
+                latest = next((item for item in group if f"{os.sep}snapshots{os.sep}{revision}{os.sep}" in item["path"]), None)
+                basis = "ref" if latest else None
+        elif runtime == "ollama":
+            latest = next((item for item in group if item.get("variant") == "latest"), None)
+            basis = "tag" if latest else None
+        if latest is None:
+            # No runtime pointer: the newest file wins, with size breaking ties
+            # because coarse filesystem timestamps often match within one second.
+            latest = max(group, key=lambda item: (item.get("modified") or "", int(item.get("size") or 0)))
+            basis = "modified"
+        latest["latest"] = True
+        latest["latest_by"] = basis
+    return findings
 
 
 def human_size(value):
@@ -828,7 +897,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/duplicates/progress":
             return self.send_json(duplicate_progress.snapshot())
         if parsed.path == "/api/runtimes":
-            return self.send_json({"runtimes": runtime_inventory(list(state.findings.values()))})
+            return self.send_json({"runtimes": runtime_inventory(list(state.findings.values()),
+                                                                running_ai_processes(), open_file_index())})
         if parsed.path == "/api/audits":
             return self.send_json({"audits": list_audit_manifests()})
         if parsed.path == "/api/ignore":
