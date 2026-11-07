@@ -22,6 +22,14 @@ const appJs = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 
 const now = Date.now();
 const daysAgo = (n) => new Date(now - n * 86400000).toISOString().slice(0, 16);
+const duplicateGroup = {
+  sha256: 'c0ffee1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+  size: 2048,
+  items: [
+    { id: 'b', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/notes.json', name: 'notes.json', size: 2048, source: 'Hugging Face models', runtime: 'huggingface' },
+    { id: 'd', path: '/home/u/.cache/hf/hub/models--y/snapshots/2/notes.json', name: 'notes.json', size: 2048, source: 'Hugging Face models', runtime: 'huggingface' },
+  ],
+};
 const fixtures = [
   { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
   { id: 'b', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/notes.json', root: '/home/u/.cache/hf/hub', name: 'notes.json', size: 2048, modified: daysAgo(10), category: 'Caches', risk: 'safe', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
@@ -36,7 +44,7 @@ window.fetch = async (url, options = {}) => {
   const reply = (value) => ({ ok: true, status: 200, json: async () => value });
   if (url === '/api/scan') return reply({ items: JSON.parse(JSON.stringify(fixtures)), warnings: [], scanned: 2 });
   if (url === '/api/audits') return reply({ audits: [{ name: 'cleanup_audit_x.json', created: new Date().toISOString(), items: 3, restorable: 2 }] });
-  if (url === '/api/duplicates') return reply({ groups: [] });
+  if (url === '/api/duplicates') return reply({ groups: [duplicateGroup] });
   if (url === '/api/hf-prune-preview') return reply({ command: 'hf cache prune --dry-run', output: 'Would free 1G', dry_run: true, warnings: '' });
   if (typeof url === 'string' && url.startsWith('/api/ignore')) {
     if (url.startsWith('/api/ignore?')) {
@@ -121,6 +129,40 @@ setTimeout(async () => {
     check('JSON export records the filters', parsed.count === fixtures.length && 'filters' in parsed);
   }
   check('toast reports the export', $('#toast').textContent.includes('Exported'), $('#toast').textContent);
+
+  // duplicate review view
+  check('duplicate view starts disabled', $$('#viewDuplicates').length === 1);
+  click($('#duplicatesBtn'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check('duplicate check enables the review view', $('#viewDuplicates').disabled === false);
+  check('duplicate badge shows group count', $('#dupCount').textContent === '1', $('#dupCount').textContent);
+  check('duplicate view renders the group header', $$('#fileRows .dup-group').length === 1, $$('#fileRows .dup-group').length);
+  check('duplicate view lists every copy', $$('#fileRows .dup-member').length === 2, $$('#fileRows .dup-member').length);
+  check('group header shows a hash', $('#fileRows .dup-hash').textContent.includes('c0ffee'));
+  check('group header shows duplicated bytes', $('#fileRows .dup-group').textContent.includes('2.0 KB'), $('#fileRows .dup-group').textContent.replace(/\s+/g,' ').slice(0, 160));
+  check('duplicate header row visible', $('#duplicatesHead').hidden === false && $('#filesHead').hidden === true);
+  check('selection disabled while reviewing duplicates', $('#selectVisible').disabled === true);
+  check('subtitle explains review-only', $('#resultSubtitle').textContent.includes('review only'), $('#resultSubtitle').textContent);
+
+  click($$('#fileRows .dup-member')[0]);
+  check('duplicate copy loads the inspector', $('#nodeInfo').textContent.includes('notes.json'));
+
+  const exportsBefore = exported.length;
+  click($('#exportCsv'));
+  check('duplicate CSV export creates a blob', exported.length === exportsBefore + 1, exported.length);
+  if (exported[exportsBefore]) {
+    const dupCsv = await exported[exportsBefore].text();
+    check('duplicate CSV starts with the group columns', dupCsv.startsWith('group,sha256,size,copies,duplicated_bytes'), dupCsv.split('\r\n')[0]);
+    check('duplicate CSV lists both copies', dupCsv.split('\r\n').length === 3, dupCsv.split('\r\n').length);
+  }
+
+  click($$('#fileRows .dup-show')[0]);
+  check('show-in-list returns to the file view', $('#filesHead').hidden === false && $('#duplicatesHead').hidden === true);
+  check('show-in-list filters to model weights', $('#filterBadge').textContent === 'MODEL WEIGHTS', $('#filterBadge').textContent);
+
+  click($('#viewDuplicates'));
+  check('duplicate view can be reopened', $$('#fileRows .dup-group').length === 1);
+  click($('#viewFiles'));
 
   // ignore-rule editor
   check('ignore button enabled after scan', $('#ignoreBtn').disabled === false);

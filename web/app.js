@@ -6,7 +6,7 @@ const state = {
   category: 'all', risk: 'all', folder: null, query: '',
   sort: 'size', descending: true, busy: false,
   audits: [], overrideRecent: false,
-  selectedId: null, duplicateGroups: null,
+  selectedId: null, duplicateGroups: null, view: 'files',
   zoom: 1, panX: 0, panY: 0,
   expanded: new Set(),
 };
@@ -162,8 +162,65 @@ function renderCategories() {
   }));
 }
 
+// ---------------------------------------------------------------- duplicates
+function duplicateGroups() { return state.duplicateGroups || []; }
+
+function duplicateWaste(groups) {
+  return groups.reduce((total, group) => total + group.size * Math.max(0, group.items.length - 1), 0);
+}
+
+function showDuplicatesInList(index) {
+  const group = duplicateGroups()[index];
+  if (!group) return;
+  state.view = 'files';
+  state.category = 'Model weights';
+  state.folder = null;
+  state.selectedId = group.items[0]?.id || null;
+  render();
+  toast('Showing these copies in the file list');
+}
+
 // ---------------------------------------------------------------- table
+function renderDuplicatesTable() {
+  const groups = duplicateGroups();
+  const wrap = $('.table-wrap');
+  const scrollTop = wrap.scrollTop;
+  if (!groups.length) {
+    $('#fileRows').innerHTML = `<tr class="empty-state"><td colspan="5"><div class="empty-icon">⧉</div><strong>No duplicate scan yet</strong><p>Hash the scanned model files to look for byte-identical copies. Names, variants, and quantizations are never treated as duplicates.</p><button class="text-button" id="emptyDuplicates">Find duplicates</button></td></tr>`;
+    const start = $('#emptyDuplicates');
+    if (start) start.addEventListener('click', findDuplicates);
+    wrap.scrollTop = scrollTop;
+    return;
+  }
+  const rows = [];
+  groups.forEach((group, index) => {
+    const copies = group.items.length;
+    const wasted = group.size * (copies - 1);
+    rows.push(`<tr class="dup-group">
+        <td class="dup-count">${copies}×</td>
+        <td colspan="2"><div class="dup-title">Group ${index + 1} <span class="dup-hash" title="SHA-256 ${esc(group.sha256)}">${esc(String(group.sha256 || '').slice(0, 20))}…</span></div><div class="file-path">${copies} byte-identical copies · ${bytes(group.size)} each</div></td>
+        <td class="size-cell">${bytes(wasted)}<div class="dup-wasted">duplicated bytes</div></td>
+        <td><button class="info-btn dup-show" data-group="${index}">Show in list</button></td>
+      </tr>`);
+    group.items.forEach(item => {
+      rows.push(`<tr class="dup-member ${state.selectedId === item.id ? 'active' : ''}" data-id="${esc(item.id || item.path)}">
+          <td></td>
+          <td><div class="file-name-cell"><span class="file-icon">▧</span><div style="min-width:0"><div class="file-name" title="${esc(item.path)}">${esc(item.name || baseName(item.path))}</div><div class="file-path" title="${esc(item.path)}">${esc(item.path)}</div></div></div></td>
+          <td class="size-cell">${bytes(item.size)}</td>
+          <td class="modified-cell">${esc(item.source || item.runtime || '—')}</td>
+          <td><span class="category-pill model">review only</span></td>
+        </tr>`);
+    });
+  });
+  $('#fileRows').innerHTML = rows.join('');
+  wrap.scrollTop = scrollTop;
+}
+
 function renderTable() {
+  if (state.view === 'duplicates') {
+    renderDuplicatesTable();
+    return;
+  }
   const wrap = $('.table-wrap');
   const scrollTop = wrap.scrollTop;
   const shown = filtered();
@@ -343,8 +400,23 @@ function renderSummary(all, shown) {
   $('#restoreBtn').title = restorable ? `Restore ${restorable} file${restorable===1?'':'s'} from the last cleanup manifest` : 'No restorable cleanup manifest yet';
 
   $('#ignoreBtn').disabled = state.busy || !all.length;
+  const groups = duplicateGroups();
+  const duplicatesView = state.view === 'duplicates';
+  $('#viewFiles').classList.toggle('active', !duplicatesView);
+  $('#viewDuplicates').classList.toggle('active', duplicatesView);
+  $('#viewDuplicates').disabled = state.busy || !groups.length;
+  $('#dupCount').textContent = groups.length;
+  $('#filesHead').hidden = duplicatesView;
+  $('#duplicatesHead').hidden = !duplicatesView;
+  if (duplicatesView) $('#selectVisible').disabled = true;
   $('#filterBadge').textContent = state.category==='all' ? 'ALL' : state.category.toUpperCase();
-  $('#resultSubtitle').textContent = all.length ? filterDescription() : 'Largest items appear first';
+  $('#resultSubtitle').textContent = duplicatesView
+    ? `${groups.length} exact SHA-256 group${groups.length===1?'':'s'} · ${bytes(duplicateWaste(groups))} duplicated · review only`
+    : all.length ? filterDescription() : 'Largest items appear first';
+  $('#resultTitle').innerHTML = duplicatesView ? 'Duplicate review <span id="filterBadge">MODELS</span>' : 'File findings <span id="filterBadge">' + (state.category==='all' ? 'ALL' : esc(state.category.toUpperCase())) + '</span>';
+  $('#shownCount').textContent = duplicatesView
+    ? `${groups.length} group${groups.length===1?'':'s'} · ${groups.reduce((n,g)=>n+g.items.length,0)} files · nothing changes on disk`
+    : $('#shownCount').textContent;
   $('#filterNote').textContent = `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} files · ${filterDescription()}`;
 }
 
@@ -399,7 +471,42 @@ function clearFilters() {
   render();
 }
 
+function exportDuplicateRows(kind) {
+  const groups = duplicateGroups();
+  if (!groups.length) { toast('Run a duplicate check first'); return; }
+  const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'');
+  let text, mime, ext;
+  if (kind === 'json') {
+    text = JSON.stringify({
+      exported: new Date().toISOString(),
+      kind: 'exact-duplicates',
+      groups: groups.map((group, index) => ({
+        group: index + 1, sha256: group.sha256, size: group.size, copies: group.items.length,
+        duplicated_bytes: group.size * (group.items.length - 1),
+        files: group.items.map(item => ({ path: item.path, name: item.name, size: item.size, source: item.source, runtime: item.runtime })),
+      })),
+    }, null, 2);
+    mime = 'application/json'; ext = 'json';
+  } else {
+    const cell = (value) => { const s = value === undefined || value === null ? '' : String(value); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; };
+    const lines = ['group,sha256,size,copies,duplicated_bytes,path,source,runtime'];
+    groups.forEach((group, index) => group.items.forEach(item => lines.push([
+      index + 1, group.sha256, group.size, group.items.length, group.size * (group.items.length - 1),
+      item.path, item.source || '', item.runtime || '',
+    ].map(cell).join(','))));
+    text = lines.join('\r\n');
+    mime = 'text/csv'; ext = 'csv';
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const link = document.createElement('a');
+  link.href = url; link.download = `aicleanup-duplicates-${stamp}.${ext}`;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast(`Exported ${groups.length} duplicate group${groups.length===1?'':'s'} as ${ext.toUpperCase()} — nothing was changed`);
+}
+
 function exportRows(kind) {
+  if (state.view === 'duplicates') { exportDuplicateRows(kind); return; }
   const rows = filtered();
   if (!rows.length) { toast('Nothing to export in the current view'); return; }
   const fields = ['path','name','size','modified','category','risk','runtime','source','cleanup_action','can_delete','age_blocked','blocked_reason','guidance'];
@@ -484,6 +591,7 @@ function setBusy(on, text) {
   $('#duplicatesBtn').disabled = on || !state.items.some(x=>x.model && x.cleanup_action==='none');
   $('#hfPreviewBtn').disabled = on || !state.items.some(x=>x.runtime==='huggingface');
   $('#restoreBtn').disabled = on || !state.audits.some(a=>a.restorable>0);
+  $('#viewDuplicates').disabled = on || !duplicateGroups().length;
   $('#progress').classList.toggle('running', on);
   $('#statusText').textContent = text || (on ? 'Scanning…' : 'Ready');
   $('.status-light').classList.toggle('working', on);
@@ -501,7 +609,7 @@ async function runScan() {
     state.items = data.items || [];
     state.locations = data.scanned || 0;
     state.category = 'all'; state.risk = 'all'; state.folder = null; state.query = '';
-    state.selectedId = null; state.duplicateGroups = null; state.expanded = new Set();
+    state.selectedId = null; state.duplicateGroups = null; state.expanded = new Set(); state.view = 'files';
     $('#search').value = '';
     if (data.warnings?.length) { $('#warningLine').textContent = data.warnings.join(' '); $('#warningLine').hidden = false; }
     $('#statusText').textContent = `Scan complete · ${state.items.length.toLocaleString()} files found`;
@@ -533,6 +641,7 @@ async function findDuplicates() {
       const detail = groups.slice(0,4).map(g => `${bytes(g.size)} each · ${g.items.slice(0,3).map(i=>i.path).join('  ↔  ')}${g.items.length>3?`  (+${g.items.length-3} more)`:''}`).join('   |   ');
       $('#warningLine').textContent = `${groups.length} exact SHA-256 duplicate group${groups.length===1?'':'s'} · about ${bytes(savings)} duplicated bytes. Review only; no files were changed. ${detail}${groups.length>4?'  |  More groups omitted.':''}`;
       $('#warningLine').hidden = false;
+      state.view = 'duplicates';
       toast(`Found ${groups.length} exact duplicate groups; nothing was changed`);
     }
     $('#statusText').textContent = `Duplicate check complete · ${groups.length} exact groups`;
@@ -669,6 +778,8 @@ $('#scanBtn').addEventListener('click', runScan);
 $('#refreshBtn').addEventListener('click', runScan);
 $('#cleanBtn').addEventListener('click', moveToTrash);
 $('#duplicatesBtn').addEventListener('click', findDuplicates);
+$('#viewFiles').addEventListener('click', () => { state.view = 'files'; render(); });
+$('#viewDuplicates').addEventListener('click', () => { state.view = 'duplicates'; render(); });
 $('#hfPreviewBtn').addEventListener('click', previewHuggingFacePrune);
 $('#restoreBtn').addEventListener('click', restoreLastCleanup);
 $('#exportCsv').addEventListener('click', () => exportRows('csv'));
@@ -699,8 +810,13 @@ $('#fileRows').addEventListener('change', e => {
   render();
 });
 $('#fileRows').addEventListener('click', e => {
+  const show = e.target.closest('.dup-show');
+  if (show) {
+    showDuplicatesInList(Number(show.dataset.group));
+    return;
+  }
   if (e.target.closest('.file-check')) return;
-  const row = e.target.closest('.file-row');
+  const row = e.target.closest('.file-row') || e.target.closest('.dup-member');
   if (!row) return;
   state.selectedId = row.dataset.id;
   render();
