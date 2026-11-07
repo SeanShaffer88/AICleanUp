@@ -8,7 +8,7 @@ const state = {
   audits: [], overrideRecent: false,
   selectedId: null, duplicateGroups: null, view: 'files', runtimes: [],
   zoom: 1, panX: 0, panY: 0,
-  expanded: new Set(), scopes: [], emptyDirs: [], hashing: false,
+  expanded: new Set(), scopes: [], emptyDirs: [], hashing: false, mapScope: 'view',
 };
 
 const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
@@ -503,9 +503,32 @@ function downloadFile(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
+function folderGroupKey(item) {
+  const root = item.root || dirName(item.path);
+  const relative = String(item.path).slice(String(root).length).replace(/^[\\/]+/, '');
+  const parts = relative.split(/[\\/]+/).filter(Boolean);
+  const head = parts.length > 1 ? parts[0] : '';
+  const rootName = baseName(root) || root;
+  return head ? `${rootName}/${head}` : rootName;
+}
+
 function mapExportModel() {
-  const shown = filtered();
-  const items = [...shown].sort((a, b) => b.size - a.size).slice(0, MAP_EXPORT_LIMIT);
+  const grouped = state.mapScope === 'scan';
+  const source = grouped ? state.items : filtered();
+  const limit = grouped ? MAP_EXPORT_LIMIT * 3 : MAP_EXPORT_LIMIT;
+  const items = [...source].sort((a, b) => b.size - a.size).slice(0, limit);
+  let groups = null;
+  if (grouped) {
+    const byFolder = new Map();
+    for (const item of items) {
+      const key = folderGroupKey(item);
+      const entry = byFolder.get(key) || { key, size: 0, items: [] };
+      entry.size += item.size || 0;
+      entry.items.push(item);
+      byFolder.set(key, entry);
+    }
+    groups = [...byFolder.values()].sort((a, b) => b.size - a.size);
+  }
   const categories = new Map();
   for (const item of items) {
     const entry = categories.get(item.category) || { category: item.category, size: 0, count: 0 };
@@ -513,12 +536,48 @@ function mapExportModel() {
     categories.set(item.category, entry);
   }
   return {
-    items, shown: shown.length,
+    items, groups, shown: source.length,
     total: items.reduce((n, x) => n + x.size, 0),
     categories: [...categories.values()].sort((a, b) => b.size - a.size),
-    filters: filterDescription(),
+    filters: grouped ? 'whole scan · grouped by folder' : filterDescription(),
     generated: new Date(),
   };
+}
+
+/* Groups first, then the files inside each group — a folder-level treemap. */
+function drawGroupedBlocks(ctx, model, box) {
+  const groupRects = squarify(model.groups.map(group => Math.max(group.size, 1)), box);
+  model.groups.forEach((group, index) => {
+    const rect = groupRects[index];
+    if (!rect || rect.w < 2 || rect.h < 2) return;
+    ctx.fillStyle = '#191c21';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.strokeStyle = '#2b3038';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(rect.w - 1, 0), Math.max(rect.h - 1, 0));
+    const header = rect.w > 110 && rect.h > 46 ? 17 : 0;
+    if (header) {
+      ctx.fillStyle = '#aab3bf';
+      ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
+      const label = shorten(ctx, `${group.key} · ${group.items.length} file${group.items.length === 1 ? '' : 's'} · ${bytes(group.size)}`, rect.w - 12);
+      if (label) ctx.fillText(label, rect.x + 6, rect.y + 12);
+    }
+    const inner = { x: rect.x + 2, y: rect.y + header + 2, w: Math.max(rect.w - 4, 0), h: Math.max(rect.h - header - 4, 0) };
+    if (inner.w <= 0 || inner.h <= 0) return;
+    const fileRects = squarify(group.items.map(item => Math.max(item.size || 0, 1)), inner);
+    group.items.forEach((item, fileIndex) => {
+      const cell = fileRects[fileIndex];
+      if (!cell || cell.w <= 0 || cell.h <= 0) return;
+      ctx.fillStyle = colors[item.category] || '#527fad';
+      ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+      if (cell.w > 78 && cell.h > 24) {
+        ctx.fillStyle = '#f6f9ff';
+        ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
+        const name = shorten(ctx, item.name, cell.w - 10);
+        if (name) ctx.fillText(name, cell.x + 4, cell.y + 15);
+      }
+    });
+  });
 }
 
 function worstRatio(row, sum, side) {
@@ -594,10 +653,13 @@ function drawMapImage(canvas, model) {
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = '#f1f4f8';
   ctx.font = '700 34px "Segoe UI", system-ui, sans-serif';
-  ctx.fillText('AICleanUp — space map', pad, 62);
+  ctx.fillText(model.groups ? 'AICleanUp — whole scan map by folder' : 'AICleanUp — space map', pad, 62);
   ctx.fillStyle = '#98a1ad';
   ctx.font = '500 16px "Segoe UI", system-ui, sans-serif';
-  ctx.fillText(`${model.items.length} of ${model.shown} files · ${bytes(model.total)} · ${model.filters}`, pad, 94);
+  const summary = model.groups
+    ? `${model.groups.length} folders · ${model.items.length} of ${model.shown} files · ${bytes(model.total)}`
+    : `${model.items.length} of ${model.shown} files · ${bytes(model.total)} · ${model.filters}`;
+  ctx.fillText(summary, pad, 94);
 
   let legendX = pad;
   const legendY = 130;
@@ -612,6 +674,9 @@ function drawMapImage(canvas, model) {
   }
 
   const box = { x: pad, y: 158, w: W - pad * 2, h: H - 158 - 76 };
+  if (model.groups) {
+    drawGroupedBlocks(ctx, model, box);
+  } else {
   const rects = squarify(model.items.map(item => Math.max(item.size || 0, 1)), box);
   model.items.forEach((item, index) => {
     const r = rects[index];
@@ -633,6 +698,7 @@ function drawMapImage(canvas, model) {
       }
     }
   });
+  }
 
   ctx.fillStyle = '#78818d';
   ctx.font = '500 13px "Segoe UI", system-ui, sans-serif';
@@ -672,7 +738,8 @@ function buildMapPdf(model) {
   const parts = [];
   const fill = (rgb) => `${rgb[0].toFixed(3)} ${rgb[1].toFixed(3)} ${rgb[2].toFixed(3)} rg`;
   parts.push(fill([0.071, 0.082, 0.102]), `0 0 ${W} ${H} re f`);
-  parts.push('BT /F1 21 Tf 0.94 0.96 0.98 rg', `${pad} ${H - 46} Td (AICleanUp - space map) Tj ET`);
+  parts.push('BT /F1 21 Tf 0.94 0.96 0.98 rg',
+    `${pad} ${H - 46} Td (AICleanUp - ${model.groups ? 'whole scan map by folder' : 'space map'}) Tj ET`);
   parts.push('BT /F1 9 Tf 0.60 0.64 0.69 rg',
     `${pad} ${H - 62} Td (${pdfString(`${model.items.length} of ${model.shown} files | ${bytes(model.total)} | ${model.filters}`)}) Tj ET`);
 
@@ -686,6 +753,37 @@ function buildMapPdf(model) {
   }
 
   const box = { x: pad, y: 112, w: W - pad * 2, h: H - 112 - 66 };
+  if (model.groups) {
+    const groupRects = squarify(model.groups.map(group => Math.max(group.size, 1)), box);
+    model.groups.forEach((group, index) => {
+      const r = groupRects[index];
+      if (!r || r.w <= 0 || r.h <= 0) return;
+      const y = H - (r.y + r.h);
+      parts.push(fill([0.098, 0.11, 0.129]), `${r.x.toFixed(2)} ${y.toFixed(2)} ${r.w.toFixed(2)} ${r.h.toFixed(2)} re f`);
+      parts.push('0.169 0.188 0.220 RG 0.7 w', `${r.x.toFixed(2)} ${y.toFixed(2)} ${r.w.toFixed(2)} ${r.h.toFixed(2)} re S`);
+      const header = r.w > 90 && r.h > 34 ? 12 : 0;
+      if (header) {
+        const room = Math.max(1, Math.floor((r.w - 8) / 4.4));
+        const label = `${group.key} | ${group.items.length} file${group.items.length === 1 ? '' : 's'} | ${bytes(group.size)}`;
+        const text = label.length > room ? `${label.slice(0, Math.max(room - 3, 1))}...` : label;
+        parts.push('BT /F1 7 Tf 0.67 0.71 0.76 rg', `${(r.x + 4).toFixed(2)} ${(H - r.y - 9).toFixed(2)} Td (${pdfString(text)}) Tj ET`);
+      }
+      const inner = { x: r.x + 2, y: r.y + header + 2, w: Math.max(r.w - 4, 0), h: Math.max(r.h - header - 4, 0) };
+      if (inner.w <= 0 || inner.h <= 0) return;
+      const fileRects = squarify(group.items.map(item => Math.max(item.size || 0, 1)), inner);
+      group.items.forEach((item, fileIndex) => {
+        const cell = fileRects[fileIndex];
+        if (!cell || cell.w <= 0 || cell.h <= 0) return;
+        const cellY = H - (cell.y + cell.h);
+        parts.push(fill(pdfRgb(colors[item.category] || '#527fad')), `${cell.x.toFixed(2)} ${cellY.toFixed(2)} ${cell.w.toFixed(2)} ${cell.h.toFixed(2)} re f`);
+        if (cell.w > 56 && cell.h > 16 && !header) {
+          const room = Math.max(1, Math.floor((cell.w - 8) / 3.9));
+          const name = item.name.length > room ? `${item.name.slice(0, Math.max(room - 3, 1))}...` : item.name;
+          parts.push('BT /F1 6.5 Tf 0.97 0.98 1 rg', `${(cell.x + 4).toFixed(2)} ${(H - cell.y - 8).toFixed(2)} Td (${pdfString(name)}) Tj ET`);
+        }
+      });
+    });
+  } else {
   const rects = squarify(model.items.map(item => Math.max(item.size || 0, 1)), box);
   model.items.forEach((item, index) => {
     const r = rects[index];
@@ -699,6 +797,7 @@ function buildMapPdf(model) {
       parts.push('BT /F1 6.5 Tf 0.97 0.98 1 rg', `${(r.x + 4).toFixed(2)} ${(H - r.y - 8).toFixed(2)} Td (${pdfString(name)}) Tj ET`);
     }
   });
+  }
 
   parts.push('BT /F1 8 Tf 0.47 0.5 0.55 rg',
     `${pad} 34 Td (${pdfString(`Generated ${model.generated.toLocaleString()} | review only - nothing was changed`)}) Tj ET`);
@@ -715,7 +814,7 @@ function buildMapPdf(model) {
 
 function exportMapPng() {
   const model = mapExportModel();
-  if (!model.items.length) { toast('Nothing in the current view to map'); return; }
+  if (!model.items.length) { toast(state.mapScope === 'scan' ? 'Scan a folder before exporting the whole-scan map' : 'Nothing in the current view to map'); return; }
   let canvas = null, drawn = false;
   try {
     canvas = document.createElement('canvas');
@@ -732,7 +831,7 @@ function exportMapPng() {
 
 function exportMapPdf() {
   const model = mapExportModel();
-  if (!model.items.length) { toast('Nothing in the current view to map'); return; }
+  if (!model.items.length) { toast(state.mapScope === 'scan' ? 'Scan a folder before exporting the whole-scan map' : 'Nothing in the current view to map'); return; }
   downloadFile(new Blob([buildMapPdf(model)], { type: 'application/pdf' }), `aicleanup-map-${stamp()}.pdf`);
   $('#statusText').textContent = `Space map exported as PDF · ${model.items.length} blocks`;
   toast('Space map exported as PDF — nothing was changed');
@@ -750,9 +849,16 @@ function renderNodeInfo() {
     ? '<span class="status-pill ok">Eligible</span>'
     : overridable(x) ? '<span class="status-pill warn">Override available</span>'
     : '<span class="status-pill block">Blocked</span>';
+  const variantNote = x.latest ? {
+    ref: 'Current revision according to the runtime’s refs/main pointer.',
+    tag: 'Tagged latest by the runtime.',
+    modified: 'Newest file in this entry — this runtime keeps no pointer, so newer variants may exist upstream.',
+  }[x.latest_by] : null;
   const rows = [
     ['Path', `<span class="info-path">${esc(x.path)}</span>`],
     ...(x.link_target ? [['Blob', `<span class="info-path">${esc(x.link_target)}</span>`]] : []),
+    ...(x.model_entry ? [['Entry', `${esc(x.model_entry)}${x.latest ? ' <span class="status-pill ok">current</span>' : ''}${x.entry_count > 1 ? ` <span class="info-muted">· ${x.entry_count} variants · ${bytes(x.entry_size)}</span>` : ''}`]] : []),
+    ...(x.variant ? [['Variant', esc(x.variant)]] : []),
     ['Size', `${bytes(x.size)}${x.logical_size!==undefined?` <span class="info-muted">· ${bytes(x.logical_size)} logical</span>`:''}`],
     ['Modified', esc(new Date(x.modified).toLocaleString())],
     ['Category', esc(x.category)],
@@ -763,6 +869,7 @@ function renderNodeInfo() {
   host.innerHTML = `<div class="info-title">${esc(x.name)} ${status}</div>
     <dl class="info-grid">${rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
     ${x.link_target?'<p class="info-note">Revision link to one shared blob — counted once across every revision.</p>':''}
+    ${variantNote?`<p class="info-note">${esc(variantNote)}</p>`:''}
     ${x.blocked_reason?`<p class="info-note warn">${esc(x.blocked_reason)}</p>`:''}
     ${x.guidance?`<p class="info-note">${esc(x.guidance)}</p>`:''}
     <div class="info-actions">
@@ -819,9 +926,23 @@ function renderRuntimes() {
       : '<span class="runtime-badge">no CLI</span>';
     const store = entry.stores[0] || '';
     const extra = entry.stores.length > 1 ? ` <span class="info-muted">+${entry.stores.length - 1} more</span>` : '';
+    const counts = [`${entry.models.toLocaleString()} model file${entry.models === 1 ? '' : 's'}`];
+    if (entry.entries !== undefined && entry.entries !== null) counts.push(`${entry.entries.toLocaleString()} entr${entry.entries === 1 ? 'y' : 'ies'}`);
+    counts.push(`${entry.stores.length} store${entry.stores.length === 1 ? '' : 's'}`);
+    const flags = [];
+    if (entry.in_use === null || entry.in_use === undefined) {
+      flags.push('<div class="runtime-flag unknown">Process check unavailable</div>');
+    } else if (entry.in_use.length) {
+      const names = entry.in_use.map(process => `${esc(process.name)} (PID ${esc(process.pid)})`).join(', ');
+      flags.push(`<div class="runtime-flag busy">In use by ${names}</div>`);
+    }
+    for (const handle of (entry.handles || []).slice(0, 2)) {
+      flags.push(`<div class="runtime-flag">Open: ${esc(baseName(handle.path))} · ${esc(handle.name)} (PID ${esc(handle.pid)})</div>`);
+    }
     return `<div class="runtime-row ${active ? 'active' : ''}" data-runtime="${esc(entry.runtime)}" title="${esc(entry.stores.join(' '))}">
         <div class="runtime-head"><span class="runtime-name">${esc(entry.runtime)}</span>${cli}<span class="runtime-size">${bytes(entry.bytes)}</span></div>
-        <div class="runtime-meta">${entry.models.toLocaleString()} model file${entry.models === 1 ? '' : 's'} · ${entry.stores.length} store${entry.stores.length === 1 ? '' : 's'}</div>
+        <div class="runtime-meta">${counts.join(' · ')}</div>
+        ${flags.join('')}
         ${store ? `<div class="info-path">${esc(store)}${extra}</div>` : ''}
         <div class="runtime-note">${esc(entry.management)}</div>
       </div>`;
@@ -1019,7 +1140,7 @@ function exportRows(kind) {
   if (state.view === 'duplicates') { exportDuplicateRows(kind); return; }
   const rows = filtered();
   if (!rows.length) { toast('Nothing to export in the current view'); return; }
-  const fields = ['path','name','size','modified','category','risk','runtime','source','cleanup_action','can_delete','age_blocked','blocked_reason','guidance','link_target'];
+  const fields = ['path','name','size','modified','category','risk','runtime','source','model_entry','variant','entry_size','entry_count','latest','latest_by','cleanup_action','can_delete','age_blocked','blocked_reason','guidance','link_target'];
   const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'');
   let text, mime, ext;
   if (kind === 'json') {
@@ -1395,6 +1516,7 @@ $('#scopeDelete').addEventListener('click', deleteScope);
 $('#scopeSelect').addEventListener('change', e => applyScope(e.target.value));
 $('#scopeConfirm').addEventListener('click', commitScope);
 $('#selectEligible').addEventListener('click', () => bulkEligible());
+$('#mapScope').addEventListener('change', e => { state.mapScope = e.target.value === 'scan' ? 'scan' : 'view'; });
 $('#exportMapPng').addEventListener('click', exportMapPng);
 $('#emptyDirsBtn').addEventListener('click', findEmptyDirs);
 $('#emptyConfirm').addEventListener('click', sweepEmptyDirs);

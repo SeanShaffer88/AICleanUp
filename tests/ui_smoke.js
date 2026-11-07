@@ -31,11 +31,11 @@ const duplicateGroup = {
   ],
 };
 const fixtures = [
-  { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, link_target: '/home/u/.cache/hf/hub/models--x/blobs/abc123', modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
+  { id: 'a', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/model.safetensors', root: '/home/u/.cache/hf/hub', name: 'model.safetensors', size: 4096, link_target: '/home/u/.cache/hf/hub/models--x/blobs/abc123', modified: daysAgo(30), category: 'Model weights', risk: 're-download', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'none', can_delete: false, age_blocked: false, model: true, model_entry: 'acme/demo', entry_size: 4096, entry_count: 2, latest: true, latest_by: 'ref', blocked_reason: 'Model files must be removed through their runtime, never as raw files.', guidance: 'Use `hf cache rm`.' },
   { id: 'b', path: '/home/u/.cache/hf/hub/models--x/snapshots/1/notes.json', root: '/home/u/.cache/hf/hub', name: 'notes.json', size: 2048, modified: daysAgo(10), category: 'Caches', risk: 'safe', runtime: 'huggingface', source: 'Hugging Face models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
   { id: 'c', path: '/home/u/.cache/hf/hub/blobs/fresh-partial', root: '/home/u/.cache/hf/hub', name: 'fresh-partial', size: 1024, modified: daysAgo(1), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: false, age_blocked: true, blocked_reason: 'Modified within the last 7 days; blocked unless you explicitly override the age rule.' },
   { id: 'e', path: '/home/u/.ollama/models/blobs/old-partial', root: '/home/u/.ollama/models', name: 'old-partial', size: 512, modified: daysAgo(20), category: 'Ollama partial downloads', risk: 'safe', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'trash', can_delete: true, age_blocked: false, selected: false },
-  { id: 'f', path: '/home/u/.ollama/models/manifests/registry.ollama.ai/library/qwen2/7b', root: '/home/u/.ollama/models', name: 'qwen2:7b', size: 1536, modified: daysAgo(40), category: 'Ollama models', risk: 're-download', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'ollama-rm', can_delete: true, age_blocked: false, selected: false, model: true, logical_size: 4096 },
+  { id: 'f', path: '/home/u/.ollama/models/manifests/registry.ollama.ai/library/qwen2/7b', root: '/home/u/.ollama/models', name: 'qwen2:7b', size: 1536, modified: daysAgo(40), category: 'Ollama models', risk: 're-download', runtime: 'ollama', source: 'Ollama models', cleanup_action: 'ollama-rm', can_delete: true, age_blocked: false, selected: false, model: true, logical_size: 4096, model_entry: 'qwen2', variant: '7b', entry_size: 4096, entry_count: 1, latest: true, latest_by: 'tag' },
 ];
 
 const calls = [];
@@ -55,8 +55,9 @@ window.fetch = async (url, options = {}) => {
   if (url === '/api/duplicates/progress') return reply({ running: true, done: 2, total: 4, bytes_done: 2048, bytes_total: 8192, cancelled: false });
   if (url === '/api/duplicates/cancel') return reply({ cancelling: true, progress: { running: true } });
   if (url === '/api/runtimes') return reply({ runtimes: [
-    { runtime: 'huggingface', models: 1, bytes: 4096, stores: ['/home/u/.cache/hf/hub'], cli: 'hf', management: 'Use `hf cache rm` or review `hf cache prune --dry-run`.' },
-    { runtime: 'ollama', models: 1, bytes: 1024, stores: ['/home/u/.ollama/models'], cli: null, management: 'Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.' },
+    { runtime: 'huggingface', models: 1, entries: 1, bytes: 4096, stores: ['/home/u/.cache/hf/hub'], cli: 'hf', management: 'Use `hf cache rm` or review `hf cache prune --dry-run`.', in_use: null, handles: [] },
+    { runtime: 'ollama', models: 1, entries: 1, bytes: 1024, stores: ['/home/u/.ollama/models'], cli: null, management: 'Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.',
+      in_use: [{ pid: 4242, name: 'ollama' }], handles: [{ path: '/home/u/.ollama/models/blobs/old-partial', pid: 4242, name: 'ollama' }] },
   ] });
   if (url === '/api/empty-dirs') return reply({ count: 2, truncated: false, roots: ['/home/u/.cache/hf/hub'], folders: [
     { path: '/home/u/.cache/hf/hub/old-run/logs', root: '/home/u/.cache/hf/hub', depth: 3 },
@@ -116,6 +117,10 @@ setTimeout(async () => {
   check('node info marks runtime-protected weights', $('#nodeInfo').textContent.includes('Protected'));
   check('node info shows the shared blob', $('#nodeInfo').textContent.includes('blobs/abc123'), $('#nodeInfo').textContent.slice(0, 120));
   check('node info explains revision links', $('#nodeInfo').textContent.includes('counted once'), $('#nodeInfo').textContent.slice(0, 200));
+  check('node info names the model entry', $('#nodeInfo').textContent.includes('acme/demo'), $('#nodeInfo').textContent.slice(0, 200));
+  check('node info flags the current revision', ($('#nodeInfo .info-grid .status-pill') || {}).textContent === 'current', $('#nodeInfo .info-grid').textContent.slice(0, 200));
+  check('node info counts the entry variants', $('#nodeInfo').textContent.includes('2 variants'), $('#nodeInfo').textContent.slice(0, 200));
+  check('node info explains the refs/main pointer', $('#nodeInfo').textContent.includes('refs/main'), $('#nodeInfo').textContent.slice(0, 240));
   check('inspect select disabled for weights', $('#inspectSelect').disabled === true);
   check('branch info resolves the folder', $('#branchInfo').textContent.includes('.cache'));
 
@@ -156,11 +161,15 @@ setTimeout(async () => {
     check('CSV has header plus rows', csv.split('\r\n').length === fixtures.length + 1, csv.split('\r\n').length);
     check('CSV exports the blob target', csv.split('\r\n')[0].endsWith('link_target'), csv.split('\r\n')[0]);
     check('CSV escapes blocked reasons', csv.includes('"Model files must be removed'));
+    check('CSV exports the model entry columns', ['model_entry', 'variant', 'entry_count', 'latest_by'].every((field) => csv.split('\r\n')[0].includes(field)), csv.split('\r\n')[0]);
+    check('CSV exports the entry row values', csv.includes('acme/demo') && csv.includes('qwen2'), csv.split('\r\n')[1] && csv.split('\r\n')[1].slice(0, 120));
   }
   if (exported[1]) {
     const parsed = JSON.parse(await exported[1].text());
     check('JSON export records the filters', parsed.count === fixtures.length && 'filters' in parsed);
     check('JSON export keeps the blob target', parsed.items.some((item) => item.link_target === '/home/u/.cache/hf/hub/models--x/blobs/abc123'));
+    check('JSON export keeps the model entry', parsed.items.some((item) => item.model_entry === 'acme/demo' && item.latest_by === 'ref'));
+    check('JSON export keeps the quantization variant', parsed.items.some((item) => item.variant === '7b' && item.latest_by === 'tag'), JSON.stringify(parsed.items.map((item) => [item.variant, item.latest_by])));
   }
   check('toast reports the export', $('#toast').textContent.includes('Exported'), $('#toast').textContent);
 
@@ -171,6 +180,10 @@ setTimeout(async () => {
   check('runtime panel shows a missing CLI', $$('#runtimePanel .runtime-badge').some(b => b.textContent === 'no CLI'));
   check('runtime panel shows store size', $('#runtimePanel .runtime-row .runtime-size').textContent === '4.0 KB', $('#runtimePanel .runtime-row .runtime-size').textContent);
   check('runtime panel explains management', $('#runtimePanel').textContent.includes('ollama rm'));
+  check('runtime panel counts model entries', $('#runtimePanel').textContent.includes('1 entry'), $('#runtimePanel').textContent.slice(0, 200));
+  check('runtime panel names the holding process', $('#runtimePanel').textContent.includes('In use by ollama (PID 4242)'), $('#runtimePanel').textContent.slice(0, 200));
+  check('runtime panel lists an open store file', $('#runtimePanel').textContent.includes('Open: old-partial'), $('#runtimePanel').textContent.slice(0, 240));
+  check('runtime panel admits a missing process check', $('#runtimePanel').textContent.includes('Process check unavailable'), $('#runtimePanel').textContent.slice(0, 240));
   const hfRow = $$('#runtimePanel .runtime-row').find(row => row.dataset.runtime === 'huggingface');
   click(hfRow);
   check('runtime row filters the file list', $$('#fileRows .file-row').length === 2, $$('#fileRows .file-row').length);
@@ -259,6 +272,9 @@ setTimeout(async () => {
 
   click($('#clearFilters'));
   check('clearing filters drops the bulk note', $('#selectNote').textContent === '', $('#selectNote').textContent);
+  click($$('#fileRows .file-row').find((row) => row.dataset.id === 'f'));
+  check('node info shows the tag variant', $('#nodeInfo').textContent.includes('7b'), $('#nodeInfo').textContent.slice(0, 200));
+  check('node info marks the latest tag', $('#nodeInfo').textContent.includes('Tagged latest'), $('#nodeInfo').textContent.slice(0, 240));
   clearSelection();
   click($$('#folderTree .folder-row').find((row) => row.dataset.path === '/home/u/.ollama/models'));
   check('bulk button follows the folder scope', $('#selectEligible').textContent === 'Select eligible in this folder', $('#selectEligible').textContent);
@@ -306,6 +322,26 @@ setTimeout(async () => {
     check('PDF writes a resolving xref', /startxref\n\d+\n%%EOF\n$/.test(pdf));
     check('PDF notes that nothing changed', pdf.includes('nothing was changed'));
   }
+
+  // whole-scan map export, grouped per folder
+  check('map export offers the whole scan', $$('#mapScope option').length === 2, $$('#mapScope option').length);
+  const groupedBlobs = exported.length;
+  $('#mapScope').value = 'scan';
+  $('#mapScope').dispatchEvent(new window.Event('change', { bubbles: true }));
+  click($('#exportMapPdf'));
+  check('grouped map export creates one blob', exported.length === groupedBlobs + 1, exported.length);
+  if (exported[groupedBlobs]) {
+    const pdf = await exported[groupedBlobs].text();
+    check('grouped map titles the whole scan', pdf.includes('whole scan map by folder'), pdf.slice(0, 260));
+    check('grouped map labels a folder group', pdf.includes('hub/models--x'), (pdf.match(/\(([^)]*)\) Tj/g) || []).slice(0, 6).join(' | '));
+    check('grouped map labels a runtime folder group', pdf.includes('models/manifests'), (pdf.match(/\(([^)]*)\) Tj/g) || []).slice(0, 6).join(' | '));
+    check('grouped map draws groups and their files', (pdf.match(/ re f/g) || []).length > fixtures.length, (pdf.match(/ re f/g) || []).length);
+    check('grouped map keeps the safety note', pdf.includes('nothing was changed'));
+    check('grouped map totals per group', pdf.includes('6.0 KB'), (pdf.match(/\(([^)]*)\) Tj/g) || []).join(' | '));
+    check('grouped map counts the files per group', pdf.includes('2 files'), (pdf.match(/\(([^)]*)\) Tj/g) || []).slice(0, 4).join(' | '));
+  }
+  $('#mapScope').value = 'view';
+  $('#mapScope').dispatchEvent(new window.Event('change', { bubbles: true }));
 
   // scan scopes
   check('scope panel starts empty', $$('#scopeSelect option').length === 1, $$('#scopeSelect option').length);

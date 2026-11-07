@@ -150,3 +150,9 @@ table tbody tr[hidden]{display:none}
 .empty-list .empty-more{color:#8b929b;font-style:italic;justify-content:flex-start}
 .duplicate-btn.running{border-color:#8a5a2c;background:#3a2b1d;color:#ecc38a}
 .duplicate-btn.running:hover{background:#47341f}
+/* v0.5: model entries and runtime usage */
+.runtime-flag{font:9.5px var(--mono);color:#8f97a1;padding:3px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.runtime-flag.busy{color:#e7b06a}
+.runtime-flag.unknown{color:#8b93a0;font-style:italic}
+.info-grid .status-pill{margin-left:4px}
+#mapScope{width:auto;min-width:120px;height:26px;margin-right:2px;font-size:10px;padding:0 4px}

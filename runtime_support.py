@@ -120,6 +120,63 @@ def extend_runtime_targets(home: Path, system: str, add):
     model("Text-generation-webui models", Path.cwd() / "data/text-generation-webui/models", "text-generation-webui")
 
 
+QUANTIZATION_RE = re.compile(
+    r"(?:^|[-_. ])(IQ\d+_[A-Z0-9_]+|Q\d+_K_[A-Z0-9]+|Q\d+_\d+|Q\d+|BF16|FP16|FP32|F16|F32)(?=[-_. ]|$)",
+    re.IGNORECASE,
+)
+
+
+def quantization_for(name):
+    """Quantization token from a model filename (Q4_K_M, IQ3_XXS, F16, ...), if present."""
+    match = QUANTIZATION_RE.search(str(name))
+    return match.group(1).upper() if match else None
+
+
+def huggingface_ref_revision(root, entry):
+    """Revision that refs/main points at for a models--org--name cache folder."""
+    folder = Path(root) / f"models--{str(entry).replace('/', '--')}"
+    try:
+        return (folder / "refs" / "main").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def model_entry_for(path, root, runtime):
+    """Return (entry, variant) for a model file, following each runtime's own layout.
+
+    Ollama keeps one manifest per tag, Hugging Face keeps one folder per repo with
+    a folder per revision, and LM Studio keeps <publisher>/<repo>/<file>.gguf. The
+    entry is the thing a user recognises as "a model"; the variant is its tag,
+    revision folder, or quantization.
+    """
+    try:
+        relative = Path(path).relative_to(Path(root))
+    except ValueError:
+        return None, None
+    parts = relative.parts
+    if runtime == "huggingface":
+        for part in parts:
+            if part.startswith("models--"):
+                return part[len("models--"):].replace("--", "/"), None
+        return None, None
+    if runtime == "ollama":
+        if "manifests" in parts:
+            tail = parts[parts.index("manifests") + 1:]
+            if len(tail) >= 2:
+                return tail[-2], tail[-1]
+        return None, None
+    if runtime == "lmstudio":
+        variant = quantization_for(path)
+        if len(parts) >= 3:
+            return f"{parts[0]}/{parts[1]}", variant
+        if len(parts) == 2:
+            return parts[0], variant
+        return None, variant
+    if len(parts) >= 2:
+        return relative.parent.as_posix(), quantization_for(path)
+    return None, quantization_for(path)
+
+
 def runtime_for_source(source):
     text = str(source).casefold()
     for runtime, markers in PROCESS_MARKERS.items():
@@ -391,8 +448,13 @@ def runtime_cli(runtime):
     return None
 
 
-def runtime_inventory(items):
-    """Summarize model stores per runtime: size, count, paths, and how to manage them."""
+def runtime_inventory(items, processes=None, open_files=None):
+    """Summarize model stores per runtime: size, count, paths, management, and who holds them.
+
+    ``processes`` comes from :func:`running_ai_processes` (None means the check is
+    unavailable) and ``open_files`` from :func:`open_file_index`; together they name
+    the process behind a model store.
+    """
     summary = {}
     for item in items:
         if not isinstance(item, dict):
@@ -401,20 +463,38 @@ def runtime_inventory(items):
         is_model = item.get("model") or item.get("category") == "Model weights" or item.get("cleanup_action") == "ollama-rm"
         if not runtime or not is_model:
             continue
-        entry = summary.setdefault(runtime, {"runtime": runtime, "models": 0, "bytes": 0, "stores": set()})
+        entry = summary.setdefault(runtime, {"runtime": runtime, "models": 0, "bytes": 0, "stores": set(), "entries": set()})
         entry["models"] += 1
         entry["bytes"] += int(item.get("logical_size") or item.get("size") or 0)
+        label = item.get("model_entry") or item.get("model_ref")
+        if label:
+            entry["entries"].add(str(label))
         if item.get("root"):
             entry["stores"].add(str(item["root"]))
+    running = {}
+    for process in processes or []:
+        running.setdefault(process.get("runtime"), []).append({"pid": process.get("pid"), "name": process.get("name")})
     inventory = []
     for runtime, entry in summary.items():
-        cli = runtime_cli(runtime)
+        stores = sorted(entry["stores"])
+        in_use = None if processes is None else sorted(running.get(runtime, []), key=lambda process: process["pid"] or 0)
+        handles = []
+        if open_files:
+            prefixes = [os.path.normcase(os.path.realpath(store)).rstrip(os.sep) + os.sep for store in stores]
+            for path, owner in sorted(open_files.items()):
+                if any(path.startswith(prefix) for prefix in prefixes):
+                    handles.append({"path": path, "pid": owner.get("pid"), "name": owner.get("name")})
+                    if len(handles) >= 5:
+                        break
         inventory.append({
             "runtime": runtime,
             "models": entry["models"],
+            "entries": len(entry["entries"]),
             "bytes": entry["bytes"],
-            "stores": sorted(entry["stores"]),
-            "cli": cli,
+            "stores": stores,
+            "cli": runtime_cli(runtime),
             "management": RUNTIME_MANAGEMENT.get(runtime, "Manage models with the app that owns them."),
+            "in_use": in_use,
+            "handles": handles,
         })
     return sorted(inventory, key=lambda item: item["bytes"], reverse=True)

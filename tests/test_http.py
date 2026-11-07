@@ -202,7 +202,11 @@ class HandlerRequestTests(unittest.TestCase):
             "b": {"id": "b", "runtime": "huggingface", "category": "Model weights", "size": 256, "root": "/m/hf", "path": "/m/hf/x.gguf"},
             "c": {"id": "c", "runtime": "chatgpt", "category": "Caches", "size": 999, "root": "/m/chat", "path": "/m/chat/c.db"},
         }
+        holder = os.path.normcase(os.path.realpath("/m/ollama/manifests/x"))
         with patch.dict(aicleanup.state.findings, findings, clear=True), \
+                patch.object(aicleanup, "running_ai_processes",
+                             return_value=[{"runtime": "ollama", "pid": 4242, "name": "ollama"}]), \
+                patch.object(aicleanup, "open_file_index", return_value={holder: {"pid": 4242, "name": "ollama"}}), \
                 patch("runtime_support.shutil.which", side_effect=lambda name: "/usr/bin/hf" if name == "hf" else None):
             with urllib.request.urlopen(self.url + "/api/runtimes", timeout=5) as response:
                 data = json.load(response)
@@ -212,6 +216,10 @@ class HandlerRequestTests(unittest.TestCase):
         self.assertEqual(runtimes["huggingface"]["cli"], "hf")
         self.assertIsNone(runtimes["ollama"]["cli"])
         self.assertTrue(runtimes["ollama"]["management"].startswith("Remove tags with"))
+        self.assertEqual(runtimes["ollama"]["in_use"], [{"pid": 4242, "name": "ollama"}])
+        self.assertEqual(runtimes["ollama"]["handles"], [{"path": holder, "pid": 4242, "name": "ollama"}])
+        self.assertEqual(runtimes["huggingface"]["in_use"], [])
+        self.assertEqual(runtimes["huggingface"]["handles"], [])
 
     def test_ignore_rules_can_be_read_and_saved_for_scanned_folders(self):
         with tempfile.TemporaryDirectory() as temp:
