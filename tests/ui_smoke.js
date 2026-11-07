@@ -38,6 +38,12 @@ window.fetch = async (url, options = {}) => {
   if (url === '/api/audits') return reply({ audits: [{ name: 'cleanup_audit_x.json', created: new Date().toISOString(), items: 3, restorable: 2 }] });
   if (url === '/api/duplicates') return reply({ groups: [] });
   if (url === '/api/hf-prune-preview') return reply({ command: 'hf cache prune --dry-run', output: 'Would free 1G', dry_run: true, warnings: '' });
+  if (typeof url === 'string' && url.startsWith('/api/ignore')) {
+    if (url.startsWith('/api/ignore?')) {
+      return reply({ root: decodeURIComponent(url.split('root=')[1]), path: '/home/u/.cache/hf/hub/.aicleanignore', exists: false, rules: [] });
+    }
+    return reply({ root: JSON.parse(options.body).root, path: '/home/u/.cache/hf/hub/.aicleanignore', rules: JSON.parse(options.body).rules.filter((line) => line.trim()), removed: false });
+  }
   return reply({});
 };
 const exported = [];
@@ -115,6 +121,21 @@ setTimeout(async () => {
     check('JSON export records the filters', parsed.count === fixtures.length && 'filters' in parsed);
   }
   check('toast reports the export', $('#toast').textContent.includes('Exported'), $('#toast').textContent);
+
+  // ignore-rule editor
+  check('ignore button enabled after scan', $('#ignoreBtn').disabled === false);
+  click($('#ignoreBtn'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check('ignore dialog offers scan roots', $$('#ignoreRoot option').length >= 1, $$('#ignoreRoot option').length);
+  check('ignore dialog notes the target file', $('#ignoreNote').textContent.includes('.aicleanignore'));
+  const textarea = $('#ignoreRules');
+  textarea.value = '*.tmp\n# keep this comment\ncache/**';
+  click($('#ignoreSave'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const posted = calls.find((call) => call.url === '/api/ignore' && call.body);
+  check('ignore save posts the rules', posted && JSON.parse(posted.body).rules.length === 3, posted && posted.body);
+  check('ignore save reports success', $('#toast').textContent.includes('ignore rule'), $('#toast').textContent);
+  check('ignore dialog closed after save', !$('#ignoreDialog').hasAttribute('open'));
   process.exitCode = failures ? 1 : 0;
   if (failures) console.log(`${failures} UI check(s) failed`);
 });

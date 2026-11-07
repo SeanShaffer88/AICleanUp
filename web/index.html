@@ -38,7 +38,7 @@
 
     <section class="workspace-grid">
       <aside class="sidebar">
-        <div class="pane-heading"><span>TREE VIEW</span><span class="pane-heading-actions"><button class="icon-btn" id="collapseTree" title="Collapse the folder tree">⌃</button><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></span></div>
+        <div class="pane-heading"><span>TREE VIEW</span><span class="pane-heading-actions"><button class="icon-btn pane-action" id="ignoreBtn" disabled title="Edit the .aicleanignore rules for a scanned folder">.ignore</button><button class="icon-btn" id="collapseTree" title="Collapse the folder tree">⌃</button><button class="icon-btn" id="locationInfo" title="About scan locations">ⓘ</button></span></div>
         <div class="tree-scroll"><div class="tree-list" id="folderTree"><div class="tree-empty">Run a scan to build the folder tree.</div></div></div>
         <div class="pane-heading"><span>FILTER PANEL</span><button class="icon-btn" id="clearFilters" title="Clear all filters">⨯</button></div>
         <div class="filter-panel">
@@ -89,6 +89,11 @@
 
   <dialog id="confirmDialog"><form method="dialog"><div class="dialog-icon">♲</div><h2>Move selected items to Trash?</h2><p id="confirmText">The selected files will be moved to your operating system’s Trash. You can restore them later.</p><div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="confirmTrash" value="confirm">Move to Trash</button></div></form></dialog>
   <dialog id="outputDialog"><form method="dialog"><h2 id="outputTitle">Read-only preview</h2><p id="outputNote" class="output-note"></p><pre id="outputText"></pre><div class="dialog-actions"><button class="cancel-btn" value="close">Close</button></div></form></dialog>
+  <dialog id="ignoreDialog"><form method="dialog"><h2>Ignore rules</h2><p class="output-note" id="ignoreNote">Patterns are saved to the scanned folder's own .aicleanignore file; nothing else is written.</p>
+    <label class="ignore-field"><span>Scanned folder</span><select id="ignoreRoot"></select></label>
+    <label class="ignore-field"><span>Patterns — one per line</span><textarea id="ignoreRules" rows="8" spellcheck="false" placeholder="*.tmp&#10;cache/**&#10;# comments are kept"></textarea></label>
+    <p class="ignore-help">Glob patterns match a path inside the folder or a file name. Lines starting with <b>#</b> stay as comments. Clearing the list removes the file so default scanning resumes.</p>
+    <div class="dialog-actions"><button class="cancel-btn" value="cancel">Cancel</button><button class="dialog-trash" id="ignoreSave" value="save">Save rules</button></div></form></dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="/app.js"></script>
 </body>

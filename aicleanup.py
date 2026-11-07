@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from runtime_support import (
     exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
@@ -501,6 +501,92 @@ class State:
     def __init__(self): self.findings = {}; self.roots = []
 state = State()
 
+MAX_IGNORE_RULES = 200
+MAX_IGNORE_RULE_LENGTH = 300
+
+
+def scanned_roots():
+    """Every folder the current results came from, resolved and de-duplicated."""
+    roots = set()
+    for entry in state.roots:
+        try:
+            roots.add(str(Path(entry["path"]).resolve(strict=True)))
+        except (OSError, KeyError, TypeError):
+            continue
+    for item in state.findings.values():
+        root = item.get("root")
+        if not root:
+            continue
+        try:
+            roots.add(str(Path(root).resolve(strict=True)))
+        except OSError:
+            continue
+    return sorted(roots)
+
+
+def ignore_file_for(root_value):
+    """Resolve a scanned folder plus its .aicleanignore, refusing anything else."""
+    try:
+        resolved = Path(str(root_value)).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeError("That folder is not part of the current scan.")
+    if not resolved.is_dir() or str(resolved) not in scanned_roots():
+        raise RuntimeError("Ignore rules can only be edited for folders in the current scan.")
+    ignore_file = resolved / ".aicleanignore"
+    if ignore_file.is_symlink():
+        raise RuntimeError("The .aicleanignore file is a symbolic link; refusing to edit it.")
+    return resolved, ignore_file
+
+
+def read_ignore_rules(ignore_file):
+    try:
+        return ignore_file.read_text(encoding="utf-8").splitlines()[:400]
+    except OSError:
+        return []
+
+
+def normalize_ignore_rules(values):
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise RuntimeError("Ignore rules must be a list of text lines.")
+    if len(values) > MAX_IGNORE_RULES:
+        raise RuntimeError(f"Keep the ignore list to {MAX_IGNORE_RULES} lines or fewer.")
+    cleaned = []
+    for raw in values:
+        line = raw.strip()
+        if not line:
+            continue
+        if "\x00" in line:
+            raise RuntimeError("Ignore rules cannot contain NUL characters.")
+        if len(line) > MAX_IGNORE_RULE_LENGTH:
+            raise RuntimeError(f"Each ignore rule must be {MAX_IGNORE_RULE_LENGTH} characters or fewer.")
+        cleaned.append(line)
+    return cleaned
+
+
+def write_ignore_rules(root_value, values):
+    """Atomically replace a scanned folder's .aicleanignore with reviewed rules."""
+    root, ignore_file = ignore_file_for(root_value)
+    rules = normalize_ignore_rules(values)
+    if not rules:
+        removed = ignore_file.exists()
+        try:
+            if removed:
+                ignore_file.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"Could not remove .aicleanignore: {exc}") from exc
+        return {"root": str(root), "path": str(ignore_file), "rules": [], "removed": removed}
+    temp = ignore_file.with_name(ignore_file.name + ".tmp")
+    try:
+        temp.write_text("\n".join(rules) + "\n", encoding="utf-8")
+        os.replace(temp, ignore_file)
+    except OSError as exc:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"Could not save .aicleanignore: {exc}") from exc
+    return {"root": str(root), "path": str(ignore_file), "rules": rules, "removed": False}
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(WEB_DIR), **kwargs)
     def log_message(self, fmt, *args): print("[aicleanup] " + fmt % args)
@@ -516,6 +602,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json({"items": list(state.findings.values()), "warnings": []})
         if parsed.path == "/api/audits":
             return self.send_json({"audits": list_audit_manifests()})
+        if parsed.path == "/api/ignore":
+            root_value = (parse_qs(parsed.query).get("root") or [""])[0]
+            try:
+                root, ignore_file = ignore_file_for(root_value)
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            return self.send_json({"root": str(root), "path": str(ignore_file),
+                                   "exists": ignore_file.is_file(), "rules": read_ignore_rules(ignore_file)})
         return super().do_GET()
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -564,6 +658,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result["errors"].append({"path": "restore log", "error": log_error})
             result["restore_log"] = log_path
             return self.send_json(result)
+        if parsed.path == "/api/ignore":
+            root_value, rules = payload.get("root"), payload.get("rules")
+            if not isinstance(root_value, str):
+                return self.send_json({"error": "Choose a scanned folder to edit."}, 400)
+            try:
+                return self.send_json(write_ignore_rules(root_value, rules))
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/hf-prune-preview":
             if not any(item.get("runtime") == "huggingface" for item in state.findings.values()):
                 return self.send_json({"error": "Scan with model weights enabled first; no Hugging Face cache is in the current results."}, 400)

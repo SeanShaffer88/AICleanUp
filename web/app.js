@@ -342,6 +342,7 @@ function renderSummary(all, shown) {
   $('#restoreBtn').disabled = state.busy || restorable === 0;
   $('#restoreBtn').title = restorable ? `Restore ${restorable} file${restorable===1?'':'s'} from the last cleanup manifest` : 'No restorable cleanup manifest yet';
 
+  $('#ignoreBtn').disabled = state.busy || !all.length;
   $('#filterBadge').textContent = state.category==='all' ? 'ALL' : state.category.toUpperCase();
   $('#resultSubtitle').textContent = all.length ? filterDescription() : 'Largest items appear first';
   $('#filterNote').textContent = `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} files · ${filterDescription()}`;
@@ -374,6 +375,24 @@ function fallbackCopy(text, done) {
   area.remove();
 }
 
+function openDialog(dialog) {
+  try { dialog.showModal(); } catch { dialog.setAttribute('open', ''); }
+}
+function closeDialog(dialog) {
+  try { dialog.close(); } catch { dialog.removeAttribute('open'); }
+}
+
+function scanRoots() {
+  const roots = new Map();
+  for (const item of state.items) {
+    const root = item.root || dirName(item.path);
+    if (!root) continue;
+    if (!roots.has(root)) roots.set(root, { root, label: item.source || baseName(root), size: 0 });
+    roots.get(root).size += item.size || 0;
+  }
+  return [...roots.values()].sort((a,b)=>b.size-a.size);
+}
+
 function clearFilters() {
   state.category = 'all'; state.risk = 'all'; state.folder = null; state.query = '';
   $('#search').value = '';
@@ -401,6 +420,61 @@ function exportRows(kind) {
   document.body.appendChild(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
   toast(`Exported ${rows.length.toLocaleString()} row${rows.length===1?'':'s'} as ${ext.toUpperCase()}`);
+}
+
+async function openIgnoreEditor() {
+  if (state.busy) return;
+  const roots = scanRoots();
+  if (!roots.length) { toast('Scan first so the ignore editor knows which folders to use'); return; }
+  const selector = $('#ignoreRoot');
+  selector.innerHTML = roots.map(entry => `<option value="${esc(entry.root)}">${esc(entry.label)} — ${esc(entry.root)}</option>`).join('');
+  const preferred = state.folder && roots.some(entry => entry.root === state.folder) ? state.folder : roots[0].root;
+  selector.value = preferred;
+  $('#ignoreNote').textContent = 'Patterns are saved to the scanned folder’s own .aicleanignore file; nothing else is written.';
+  await loadIgnoreRules(preferred);
+  openDialog($('#ignoreDialog'));
+}
+
+async function loadIgnoreRules(root) {
+  const area = $('#ignoreRules');
+  area.value = '';
+  area.placeholder = 'Loading…';
+  try {
+    const response = await fetch(`/api/ignore?root=${encodeURIComponent(root)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not read ignore rules');
+    area.value = (data.rules || []).join('\n');
+    area.placeholder = '*.tmp\ncache/**\n# comments are kept';
+    $('#ignoreNote').textContent = data.exists
+      ? `${data.path} — ${(data.rules||[]).length} line(s) currently ignored.`
+      : `No .aicleanignore yet in ${data.root}; saving creates one.`;
+  } catch (err) {
+    area.placeholder = 'Rules unavailable';
+    toast(err.message);
+  }
+}
+
+async function saveIgnoreRules(event) {
+  if (event) event.preventDefault();
+  if (state.busy) return;
+  const root = $('#ignoreRoot').value;
+  const rules = $('#ignoreRules').value.split('\n');
+  setBusy(true, 'Saving ignore rules…');
+  try {
+    const response = await fetch('/api/ignore', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ root, rules }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not save ignore rules');
+    closeDialog($('#ignoreDialog'));
+    const count = (data.rules || []).length;
+    toast(data.removed ? 'Ignore file removed — default scanning restored' : `Saved ${count} ignore rule${count===1?'':'s'}`);
+    $('#statusText').textContent = data.removed ? 'Ignore file removed · rescanning' : `Ignore rules saved · ${count} pattern${count===1?'':'s'}`;
+    await runScan();
+  } catch (err) {
+    toast(err.message);
+    $('#statusText').textContent = 'Saving ignore rules failed';
+  } finally {
+    setBusy(false, $('#statusText').textContent);
+  }
 }
 
 function setBusy(on, text) {
@@ -604,6 +678,9 @@ $('#clearFilters').addEventListener('click', clearFilters);
 $('#clearPath').addEventListener('click', () => { $('#workspace').value = ''; });
 $('#locationInfo').addEventListener('click', () => toast('Scans standard AI app folders in your profile. Add a project folder to detect old scratch and patch files.'));
 $('#collapseTree').addEventListener('click', () => { state.expanded.clear(); render(); });
+$('#ignoreBtn').addEventListener('click', openIgnoreEditor);
+$('#ignoreRoot').addEventListener('change', e => { loadIgnoreRules(e.target.value); });
+$('#ignoreSave').addEventListener('click', saveIgnoreRules);
 $('#folderTree').addEventListener('click', onTreeClick);
 $('#riskFilters').addEventListener('click', e => {
   const chip = e.target.closest('.filter-chip');

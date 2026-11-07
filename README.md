@@ -27,6 +27,7 @@ The GUI follows the dense, panel-driven layout of a disk-usage analyzer such as 
 - **Filter panel** (left): risk chips (safe, inspect, re-download, recent) with live counts, plus the category list. Filters combine with the tree scope and the search box.
 - **Results and space map** (center): sortable file list where a row click loads the inspector, double-clicking a space-map block zooms the tree to that block's folder, and the map supports wheel zoom, drag-pan, and zoom/reset controls.
 - **Inspector** (right): **Selected item** (node info: size, modified, category, risk, owner/runtime, eligibility, guidance, and quick actions), **Folder** (branch info: findings, total size, share of scan, cleanup-eligible bytes, largest children), and **Statistics** for the current view.
+- **Ignore rules**: the `.ignore` button in the tree pane edits a scanned folder's own `.aicleanignore` — pick the folder, review or change the patterns, and save. Saving is atomic, replaces only that file, refuses symlinked ignore files, caps the list at 200 lines, and rescans automatically. Clearing the list deletes the file so default scanning resumes.
 - **Export**: the CSV and JSON buttons download the current filtered view, including category, risk, runtime, eligibility, and any blocked reason.
 
 Press `/` to jump to the search box. Moved files remain restorable, so the workspace never becomes a one-way door.
@@ -35,7 +36,7 @@ Press `/` to jump to the search box. Moved files remain restorable, so the works
 
 - **Scan** checks known AI-client and runtime locations in the current user's home directory.
 - Enter a project folder path to also look for stale files in `.ai_scratch/` and `tmp_gen/`, plus `.diff`, `.patch`, `.bak`, and similar backup files.
-- `.aicleanignore` files are read from each scanned root. Add one glob pattern per line; blank lines and lines starting with `#` are ignored. The scanner also skips common dependency/version-control directories and credential-like filenames.
+- `.aicleanignore` files are read from each scanned root. Add one glob pattern per line; blank lines and lines starting with `#` are ignored. The scanner also skips common dependency/version-control directories and credential-like filenames. Use the `.ignore` button in the tree pane to edit these rules from the GUI.
 - Model weights are excluded by default. Enable **Include model weights** to inspect recognized weight files; they are always unselected initially.
 - Only obvious cache files are preselected. App data, developer histories/configuration, superseded outputs, and model weights require explicit selection. All choices are visible in the file list and space totals; review paths before confirming cleanup.
 
