@@ -1,7 +1,7 @@
 ; Inno Setup script for the AICleanUp Windows installer.
 ;
 ; Build it after PyInstaller has produced dist\AICleanUp.exe:
-;   ISCC.exe /DAppVersion=1.0.0 packaging\aicleanup.iss
+;   ISCC.exe /DAppVersion=1.0.1 packaging\aicleanup.iss
 ; The result is dist\AICleanUp-Setup-<version>.exe.
 ;
 ; The installer is per-user by default (no admin prompt, no service, no
@@ -9,7 +9,7 @@
 ; Trash contents, and ~\.aicleanup\audit manifests are left untouched.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 
 #define AppName "AICleanUp"
