@@ -108,14 +108,28 @@ npm run test:ui
 
 The PNG and PDF exports are also checked by eye during review: the PNG is drawn from the same treemap geometry as the PDF, and the PDF is a single vector page that any reader opens without embedded fonts.
 
-## CLI dry run
+## Command line
 
-The command-line interface reports candidate totals and never modifies files; restores need an explicit `--confirm`:
+The command-line interface is read-only by default: a plain run or `--dry-run` only prints totals. `--restore` and `--sweep-empty` preview unless `--confirm` is given, and `--duplicates` never changes anything:
 
 ```bash
 python3 aicleanup.py --dry-run
 python3 aicleanup.py --workspace ~/src/my-project
 python3 aicleanup.py --include-models
-python3 aicleanup.py --restore            # preview the newest cleanup
-python3 aicleanup.py --hf-prune-preview   # Hugging Face read-only prune report
+python3 aicleanup.py --duplicates            # exact SHA-256 report, nothing changed
+python3 aicleanup.py --duplicates --json     # the same report for scripts
+python3 aicleanup.py --empty-dirs            # folders inside scanned locations with no files at all
+python3 aicleanup.py --sweep-empty           # preview that list
+python3 aicleanup.py --sweep-empty --confirm # move exactly those folders to Trash
+python3 aicleanup.py --restore               # preview the newest cleanup
+python3 aicleanup.py --hf-prune-preview      # Hugging Face read-only prune report
 ```
+
+`--json` applies to `--duplicates`, `--empty-dirs`, and `--sweep-empty`, so the same checks can run in a script or a cron job:
+
+```bash
+python3 aicleanup.py --duplicates --json | jq '.count, .duplicated_bytes'
+python3 aicleanup.py --empty-dirs --json | jq '.folders[].path'
+```
+
+`--sweep-empty` previews unless `--confirm` is passed, and it uses the identical validation as the GUI: only folders inside the scanned locations, still empty, never symlinks, never runtime layout folders. Finding nothing to sweep is a success, so a scheduled `--sweep-empty --confirm` exits quietly when there is nothing to do.
