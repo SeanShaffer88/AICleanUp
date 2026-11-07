@@ -51,6 +51,21 @@ class OllamaCommandTests(unittest.TestCase):
             self.assertEqual(len(groups), 1)
             self.assertEqual({Path(item["path"]) for item in groups[0]["items"]}, {first, exact})
 
+    def test_scanner_never_flags_its_own_process(self):
+        class FakeProcess:
+            def __init__(self, info):
+                self.info = info
+
+        fake = FakeProcess({"pid": os.getpid(), "name": "ChatGPT", "cmdline": ["chatgpt", "--serve"]})
+        with patch("psutil.process_iter", return_value=[fake]), \
+                patch.object(runtime_support.os, "getpid", return_value=os.getpid()):
+            self.assertEqual(runtime_support.running_ai_processes(), [])
+
+        other = FakeProcess({"pid": os.getpid() + 1, "name": "ChatGPT", "cmdline": ["chatgpt", "--serve"]})
+        with patch("psutil.process_iter", return_value=[other]):
+            detected = runtime_support.running_ai_processes()
+        self.assertEqual([process["runtime"] for process in detected], ["chatgpt"])
+
 
 if __name__ == "__main__":
     unittest.main()

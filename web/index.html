@@ -19,6 +19,7 @@
       <div class="toolbar-separator"></div>
       <label class="path-input"><svg viewBox="0 0 20 20"><path d="M2.5 5.5h6l1.7 1.8h7.3v8.2h-15z"/></svg><input id="workspace" type="text" placeholder="Add a project folder to scan…" aria-label="Project folder path" /><button id="clearPath" title="Clear folder path">×</button></label>
       <label class="check-option"><input type="checkbox" id="includeModels" /><span class="fake-check"></span> Include model weights</label>
+      <label class="check-option override-option" title="Allow caches modified in the last 7 days to be selected. Model weights stay blocked."><input type="checkbox" id="overrideRecent" /><span class="fake-check"></span> Allow recent files</label>
       <div class="toolbar-spacer"></div>
       <button class="toolbar-btn" id="refreshBtn" title="Rescan known locations"><svg viewBox="0 0 20 20"><path d="M16.5 8a6.7 6.7 0 1 0 .2 3M16.5 3.7V8h-4.3"/></svg><span>Rescan</span></button>
       <button class="toolbar-btn" id="restoreBtn" disabled title="Restore files from the last cleanup manifest"><svg viewBox="0 0 20 20"><path d="M3.5 12a6.7 6.7 0 1 0-.2-3M3.5 16.3V12h4.3"/></svg><span>Undo last cleanup</span></button>

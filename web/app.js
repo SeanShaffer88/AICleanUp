@@ -1,11 +1,16 @@
 const $ = (s) => document.querySelector(s);
-const state = { items: [], locations: 0, category: 'all', query: '', sort: 'size', descending: true, busy: false, audits: [] };
+const state = { items: [], locations: 0, category: 'all', query: '', sort: 'size', descending: true, busy: false, audits: [], overrideRecent: false };
 const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function bytes(n) { if (n < 1024) return `${n} B`; const units=['KB','MB','GB','TB']; let i=-1; do { n/=1024; i++; } while(n>=1024 && i<units.length-1); return `${n.toFixed(1)} ${units[i]}`; }
 function dateText(s) { try { const d=new Date(s); return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'2-digit'}); } catch { return s; } }
 function filtered() { return state.items.filter(x => (state.category==='all'||x.category===state.category) && (!state.query || `${x.name} ${x.path} ${x.category}`.toLowerCase().includes(state.query.toLowerCase()))); }
 function selectedItems() { return state.items.filter(x=>x.selected); }
+// The 7-day rule may be overridden only for plain cleanup candidates, and only
+// when the operator turns the option on. Model weights stay non-selectable.
+const overridable = (x) => state.overrideRecent && !!x.age_blocked && !x.model && x.cleanup_action==='trash' && x.risk!=='caution' && x.risk!=='never-delete';
+const selectable = (x) => x.can_delete || overridable(x);
+function selectionTitle(x) { return x.can_delete ? '' : overridable(x) ? 'Modified in the last 7 days — selected under the age override' : (x.blocked_reason||x.guidance||''); }
 function render() {
   const all=state.items, shown=filtered(), selected=selectedItems(), selectedBytes=selected.reduce((n,x)=>n+x.size,0);
   $('#recoverable').innerHTML=all.length?`${(selectedBytes/1073741824).toFixed(selectedBytes/1073741824<10?2:1)} <small>GB</small>`:'— <small>GB</small>';
@@ -37,15 +42,15 @@ function render() {
     $('#shownCount').textContent='0 items';
     const empty=$('#emptyScan'); if(empty) empty.addEventListener('click',runScan);
   } else {
-    $('#fileRows').innerHTML=sorted.map(x=>`<tr class="file-row ${x.selected?'selected':''}" data-id="${esc(x.id)}"><td><input class="file-check" type="checkbox" aria-label="Select ${esc(x.name)}" ${x.selected?'checked':''} ${x.can_delete?'':'disabled'} title="${esc(x.blocked_reason||x.guidance||'')}" ></td><td><div class="file-name-cell"><span class="file-icon">▧</span><div style="min-width:0"><div class="file-name" title="${esc(x.path)}">${esc(x.name)}</div><div class="file-path" title="${esc(x.guidance||x.path)}">${esc(x.path)}</div></div></div></td><td class="size-cell" title="${x.logical_size!==undefined?`Potentially reclaimable ${bytes(x.size)}; logical model size ${bytes(x.logical_size)}`:''}">${bytes(x.size)}</td><td class="modified-cell">${dateText(x.modified)}</td><td><span class="category-pill ${x.category==='Superseded outputs'?'outputs':x.category==='Model weights'?'model':x.category==='Ollama partial downloads'?'partial':x.category==='Developer tools'?'developer':''}" title="${esc(x.category)}">${esc(x.category)}</span><span class="risk-chip ${esc(x.risk||'inspect')}" title="${esc(x.blocked_reason||x.guidance||x.risk||'')}" >${esc((x.risk||'inspect').toUpperCase())}</span></td></tr>`).join('');
+    $('#fileRows').innerHTML=sorted.map(x=>`<tr class="file-row ${x.selected?'selected':''}" data-id="${esc(x.id)}"><td><input class="file-check" type="checkbox" aria-label="Select ${esc(x.name)}" ${x.selected?'checked':''} ${selectable(x)?'':'disabled'} title="${esc(selectionTitle(x))}" ></td><td><div class="file-name-cell"><span class="file-icon">▧</span><div style="min-width:0"><div class="file-name" title="${esc(x.path)}">${esc(x.name)}</div><div class="file-path" title="${esc(x.guidance||x.path)}">${esc(x.path)}</div></div></div></td><td class="size-cell" title="${x.logical_size!==undefined?`Potentially reclaimable ${bytes(x.size)}; logical model size ${bytes(x.logical_size)}`:''}">${bytes(x.size)}</td><td class="modified-cell">${dateText(x.modified)}</td><td><span class="category-pill ${x.category==='Superseded outputs'?'outputs':x.category==='Model weights'?'model':x.category==='Ollama partial downloads'?'partial':x.category==='Developer tools'?'developer':''}" title="${esc(x.category)}">${esc(x.category)}</span><span class="risk-chip ${esc(x.risk||'inspect')}" title="${esc(x.blocked_reason||x.guidance||x.risk||'')}" >${esc((x.risk||'inspect').toUpperCase())}${x.age_blocked&&!x.model?' · RECENT':''}</span></td></tr>`).join('');
     $('#shownCount').textContent=`${shown.length.toLocaleString()} item${shown.length===1?'':'s'}${state.query?' matching':''}`;
     document.querySelectorAll('.file-row').forEach(row=>row.querySelector('.file-check').addEventListener('change',e=>{const x=state.items.find(i=>i.id===row.dataset.id); if(x)x.selected=e.target.checked;render();}));
   }
   const activeAction=selected.find(x=>x.cleanup_action)?.cleanup_action;
-  const selectable=shown.filter(x=>x.can_delete&&(!activeAction||x.cleanup_action===activeAction)), visibleSelected=selectable.filter(x=>x.selected).length;
-  $('#selectVisible').disabled=selectable.length===0;
-  $('#selectVisible').checked=selectable.length>0&&visibleSelected===selectable.length;
-  $('#selectVisible').indeterminate=visibleSelected>0&&visibleSelected<selectable.length;
+  const selectableRows=shown.filter(x=>selectable(x)&&(!activeAction||x.cleanup_action===activeAction)), visibleSelected=selectableRows.filter(x=>x.selected).length;
+  $('#selectVisible').disabled=selectableRows.length===0;
+  $('#selectVisible').checked=selectableRows.length>0&&visibleSelected===selectableRows.length;
+  $('#selectVisible').indeterminate=visibleSelected>0&&visibleSelected<selectableRows.length;
   renderMap(catList, total);
 }
 function renderTree(cats) {
@@ -132,17 +137,18 @@ async function moveToTrash() {
   const ollama=actions.has('ollama-rm');
   const bytesTotal=selected.reduce((n,x)=>n+x.size,0);
   const logicalTotal=selected.reduce((n,x)=>n+(x.logical_size||x.size),0);
-  $('#confirmDialog h2').textContent=ollama?'Remove selected models with Ollama?':'Move selected items to Trash?';
-  $('#confirmDialog .dialog-trash').textContent=ollama?'Run ollama rm':'Move to Trash';
+  const overriddenCount=selected.filter(x=>!x.can_delete).length;
+  $('#confirmDialog h2').textContent=ollama?'Remove selected models with Ollama?':overriddenCount?'Override the 7-day rule for these files?':'Move selected items to Trash?';
+  $('#confirmDialog .dialog-trash').textContent=ollama?'Run ollama rm':overriddenCount?'Move anyway':'Move to Trash';
   $('#confirmText').textContent=ollama
     ?`The Ollama CLI will remove ${selected.length} selected model tag${selected.length===1?'':'s'} (${bytes(logicalTotal)} logical size). Estimated space freed: ${bytes(bytesTotal)}; shared blobs remain. Loaded models are blocked.`
-    :`${selected.length.toLocaleString()} item${selected.length===1?'':'s'} (${bytes(bytesTotal)}) will be moved to your system Trash. Cleanup is blocked for recent files, open handles, and running related clients.`;
+    :`${selected.length.toLocaleString()} item${selected.length===1?'':'s'} (${bytes(bytesTotal)}) will be moved to your system Trash.${overriddenCount?` ${overriddenCount} of them changed within the last 7 days; the age override is recorded in the audit manifest.`:''} Open handles and running related clients are still blocked.`;
   const dialog=$('#confirmDialog');
   if(await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='confirm'),{once:true});dialog.showModal();})!==true)return;
   setBusy(true,ollama?'Removing through Ollama…':'Moving files to Trash…');
   try {
     const endpoint=ollama?'/api/ollama-remove':'/api/trash';
-    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:selected.map(x=>x.id)})});
+    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:selected.map(x=>x.id),override_recent:overriddenCount>0})});
     const data=await response.json();if(!response.ok)throw new Error(data.error||'Cleanup failed');
     const moved=new Set((data.moved||[]).map(x=>x.path)); state.items=state.items.filter(x=>!moved.has(x.path));
     render();
@@ -154,7 +160,8 @@ async function moveToTrash() {
 }
 let toastTimer;function toast(text){const el=$('#toast');el.textContent=text;el.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('visible'),3500);}
 $('#scanBtn').addEventListener('click',runScan);$('#restoreBtn').addEventListener('click',restoreLastCleanup);$('#refreshBtn').addEventListener('click',runScan);$('#cleanBtn').addEventListener('click',moveToTrash);$('#duplicatesBtn').addEventListener('click',findDuplicates);$('#search').addEventListener('input',e=>{state.query=e.target.value;render();});
-$('#selectVisible').addEventListener('change',e=>{const action=selectedItems().find(x=>x.cleanup_action)?.cleanup_action;filtered().filter(x=>x.can_delete&&(!action||x.cleanup_action===action)).forEach(x=>x.selected=e.target.checked);render();});
+$('#overrideRecent').addEventListener('change',e=>{state.overrideRecent=e.target.checked;if(!state.overrideRecent)state.items.forEach(x=>{if(!x.can_delete)x.selected=false;});render();if(state.overrideRecent)toast('Age override enabled — recent files can now be selected; model weights stay blocked');});
+$('#selectVisible').addEventListener('change',e=>{const action=selectedItems().find(x=>x.cleanup_action)?.cleanup_action;filtered().filter(x=>selectable(x)&&(!action||x.cleanup_action===action)).forEach(x=>x.selected=e.target.checked);render();});
 $('#sortSize').addEventListener('click',()=>{state.sort='size';state.descending=!state.descending;render();});
 $('#sortName').addEventListener('click',()=>{state.sort='name';state.descending=!state.descending;render();});
 $('#clearPath').addEventListener('click',()=>$('#workspace').value='');
