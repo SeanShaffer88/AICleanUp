@@ -112,6 +112,9 @@ setTimeout(async () => {
   check('space map blocks', $$('#treemapCanvas .map-block').length === fixtures.length, $$('#treemapCanvas .map-block').length);
   check('restore enabled by audits', $('#restoreBtn').disabled === false);
   check('title bar shows the version', $('#appVersion').textContent === 'v1.0.0', $('#appVersion').textContent);
+  check('page links the favicon', ($('link[rel="icon"]') || {}).getAttribute && $('link[rel="icon"]').getAttribute('href') === '/favicon.png');
+  check('page links the touch icon', $('link[rel="apple-touch-icon"]').getAttribute('href') === '/favicon-180.png');
+  check('brand mark uses the icon artwork', (($('.brand-mark') || {}).tagName || '') === 'IMG' && $('.brand-mark').getAttribute('src') === '/favicon.png');
   check('version badge becomes visible', $('#appVersion').hidden === false);
   check('HF preview enabled', $('#hfPreviewBtn').disabled === false);
 
