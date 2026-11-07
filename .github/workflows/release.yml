@@ -3,14 +3,16 @@ name: Release
 # Tagging 1.0.0 (git tag v1.0.0 && git push origin v1.0.0) builds every
 # artifact and attaches it to the GitHub release for that tag:
 #
-#   AICleanUp-Setup-<version>.exe        Windows installer (Inno Setup, per user)
+#   AICleanUp-Setup-<version>.exe             Windows installer (Inno Setup, per user)
 #   AICleanUp-<version>-windows-x64-portable.zip
 #   AICleanUp-<version>-linux-x64-portable.zip
-#   AICleanUp-<version>-macos-arm64-portable.zip
+#   AICleanUp-<version>-macos-<arch>-portable.zip
 #   SHA256SUMS.txt
 #
-# The release itself is created by hand with its notes; this workflow uploads
-# the binaries to it, and creates a placeholder release if none exists yet.
+# The release notes are written by hand; this workflow uploads the binaries to
+# that release, and creates a placeholder release if none exists yet. Running
+# it by hand (Actions -> Release -> Run workflow) rebuilds the same artifacts
+# for an existing tag without touching the tag itself.
 
 on:
   push:
@@ -44,22 +46,21 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   build:
-    name: Build ${{ matrix.name }}
+    name: Build for ${{ matrix.platform }}
     needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: windows-x64
-            os: windows-latest
-            platform: Windows (64-bit)
-          - name: linux-x64
-            os: ubuntu-22.04
-            platform: Linux (x86_64)
-          - name: macos-arm64
-            os: macos-14
-            platform: macOS (Apple silicon)
+          - os: windows-latest
+            platform: Windows
+          - os: ubuntu-22.04
+            platform: Linux
+          # macos-latest is whichever macOS image this repository is allowed to
+          # use; the artifact name records the architecture it actually built.
+          - os: macos-latest
+            platform: macOS
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +68,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Resolve the version
+      - name: Resolve the version and target
         shell: bash
         run: |
           set -euo pipefail
@@ -76,8 +77,13 @@ jobs:
           else
             version="${GITHUB_REF_NAME#v}"
           fi
-          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
-          echo "Building AICleanUp $version for ${{ matrix.name }}"
+          arch="$(python -c 'import platform; print({"x86_64": "x64", "amd64": "x64", "arm64": "arm64"}.get(platform.machine().lower(), platform.machine().lower()))')"
+          target="$(printf '%s' "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')-${arch}"
+          {
+            echo "APP_VERSION=$version"
+            echo "BUILD_TARGET=$target"
+          } >> "$GITHUB_ENV"
+          echo "Building AICleanUp $version for ${target}"
 
       - name: Install build dependencies
         run: python -m pip install --upgrade pip pyinstaller -r requirements.txt
@@ -103,8 +109,8 @@ jobs:
           cp dist/AICleanUp* package/
           cp LICENSE README.md package/
           cat > package/START-HERE.txt <<EOF
-          AICleanUp ${APP_VERSION} - portable build for ${{ matrix.platform }}
-          =====================================================================
+          AICleanUp ${APP_VERSION} - portable build for ${BUILD_TARGET}
+          ============================================================
 
           1. Keep this folder together; the whole app lives inside it.
           2. Start it:
@@ -139,10 +145,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python packaging/make_archive.py package "AICleanUp-${APP_VERSION}-${{ matrix.name }}-portable.zip"
+          python packaging/make_archive.py package "AICleanUp-${APP_VERSION}-${BUILD_TARGET}-portable.zip"
 
       - name: Build the Windows installer
-        if: matrix.name == 'windows-x64'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
@@ -155,13 +161,16 @@ jobs:
           Get-Item "AICleanUp-Setup-$env:APP_VERSION.exe" | Select-Object Name, Length
 
       - name: Attach the build to the release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
+          if [ "${{ github.ref_type }}" != "tag" ] && [ -z "${{ inputs.version }}" ]; then
+            echo "Not a release build; the artifacts stay in this workflow run."
+            exit 0
+          fi
+          tag="v${APP_VERSION}"
           repo="$GITHUB_REPOSITORY"
           if ! gh release view "$tag" -R "$repo" > /dev/null 2>&1; then
             gh release create "$tag" -R "$repo" --title "AICleanUp ${APP_VERSION}" \
@@ -179,9 +188,9 @@ jobs:
       - name: Keep the build for inspection
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
+          name: ${{ env.BUILD_TARGET }}
           path: |
-            AICleanUp-*.zip
+            AICleanUp-*-portable.zip
             AICleanUp-Setup-*.exe
           if-no-files-found: error
           retention-days: 7
@@ -189,16 +198,21 @@ jobs:
   checksums:
     name: Publish checksums
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' || inputs.version != ''
     runs-on: ubuntu-22.04
     steps:
-      - name: Hash every downloaded asset and attach SHA256SUMS.txt
+      - name: Hash every published asset and attach SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v${INPUT_VERSION}"
+          fi
           repo="$GITHUB_REPOSITORY"
-          tag="$GITHUB_REF_NAME"
           mkdir -p assets && cd assets
           gh release download "$tag" -R "$repo" --pattern 'AICleanUp-*.zip' --pattern 'AICleanUp-Setup-*.exe' --clobber
           sha256sum ./* > SHA256SUMS.txt
