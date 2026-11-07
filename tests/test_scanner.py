@@ -10,6 +10,13 @@ import aicleanup
 
 
 class ScannerTests(unittest.TestCase):
+    def setUp(self):
+        # Scan tests assert cache selection, so keep ambient AI processes out of
+        # the picture; process blocking has its own dedicated tests.
+        patcher = patch.object(aicleanup, "running_ai_processes", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_windows_target_registry_covers_msix_and_user_data_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp) / "profile"
@@ -209,6 +216,62 @@ class ScannerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Symbolic links"):
                 aicleanup.validate_trash_candidate(link, root)
             self.assertTrue(target.exists())
+
+    def test_running_client_blocks_candidate_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cache").mkdir()
+            cache_file = root / "Cache" / "cache.bin"
+            cache_file.write_bytes(b"cache")
+            old = time.time() - 8 * 86400
+            os.utime(cache_file, (old, old))
+            with patch.object(aicleanup, "running_ai_processes",
+                              return_value=[{"runtime": "chatgpt", "name": "ChatGPT", "pid": 7}]):
+                items, _ = aicleanup.scan([{"label": "ChatGPT Store", "category": "Caches", "path": root}])
+            self.assertEqual(len(items), 1)
+            self.assertFalse(items[0]["can_delete"])
+            self.assertFalse(items[0]["selected"])
+            self.assertIn("Close the running AI process", items[0]["blocked_reason"])
+
+    def test_quarantine_fallback_is_restorable_from_its_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            source_root = home / "cache"
+            source_root.mkdir()
+            source = source_root / "blob.bin"
+            source.write_bytes(b"cache bytes")
+            with patch.object(aicleanup.Path, "home", return_value=home):
+                moved = aicleanup.quarantine_move(source)
+                self.assertEqual(moved["route"], "AICleanUp quarantine")
+                self.assertFalse(source.exists())
+                self.assertTrue(Path(moved["destination"]).is_file())
+                manifest, error = aicleanup.write_audit_manifest([
+                    {"path": str(source), "size": 11, "category": "Caches",
+                     "route": moved["route"], "destination": moved["destination"]},
+                ])
+                self.assertIsNone(error)
+                preview = aicleanup.restore_manifest(Path(manifest).name, dry_run=True)
+                self.assertEqual(len(preview["restored"]), 1)
+                self.assertFalse(source.exists())
+                report = aicleanup.restore_manifest(Path(manifest).name)
+            self.assertEqual(len(report["restored"]), 1)
+            self.assertEqual(source.read_bytes(), b"cache bytes")
+
+    def test_restore_skips_ollama_removals_and_unknown_locations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            with patch.object(aicleanup.Path, "home", return_value=home):
+                manifest, error = aicleanup.write_audit_manifest([
+                    {"path": str(home / "llama3.1-8b"), "size": 4, "category": "Model weights", "route": "ollama rm"},
+                    {"path": str(home / "legacy-cache.db"), "size": 4, "category": "Caches", "route": "system trash"},
+                ])
+                self.assertIsNone(error)
+                report = aicleanup.restore_manifest(Path(manifest).name)
+            self.assertEqual(report["restored"], [])
+            self.assertEqual(len(report["skipped"]), 2)
+            reasons = " ".join(item["reason"] for item in report["skipped"])
+            self.assertIn("ollama pull", reasons)
+            self.assertIn("operating system Trash", reasons)
 
 
 if __name__ == "__main__":

@@ -311,17 +311,59 @@ def validate_trash_candidate(path: Path, root: Path):
     return candidate
 
 
+def _trash_roots():
+    """Candidate directories where the OS browser/desktop trash keeps files."""
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return [data_home / "Trash" / "files", Path.home() / ".Trash"]
+
+
+def _locate_in_trash(name, size):
+    """Find the file we just trashed so the manifest can record a restore path."""
+    for root in _trash_roots():
+        candidate = root / name
+        try:
+            info = os.lstat(candidate)
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode) and (size is None or info.st_size == size):
+            return candidate
+    return None
+
+
+def quarantine_move(path: Path):
+    """Move into an app-managed quarantine folder when no OS trash route exists."""
+    root = Path.home() / ".aicleanup" / "quarantine"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = root / f"{stamp}_{uuid.uuid4().hex[:6]}"
+    folder.mkdir(parents=True, exist_ok=False)
+    destination = folder / path.name
+    shutil.move(str(path), str(destination))
+    return {"route": "AICleanUp quarantine", "destination": str(destination)}
+
+
 def trash_path(path: Path):
-    """Move to the OS trash; refuse a permanent-delete fallback."""
+    """Move a file to the OS trash or app quarantine.
+
+    Returns the route used plus the recorded destination, so the audit manifest
+    can restore the file later. Never falls back to permanent deletion.
+    """
+    path = Path(path)
+    try:
+        original_size = os.lstat(path).st_size
+    except OSError:
+        original_size = None
     try:
         from send2trash import send2trash
-        send2trash(str(path)); return "system trash"
     except ImportError:
-        pass
-    except Exception as exc:
-        raise RuntimeError(f"Could not move item to system trash: {exc}") from exc
-    system = platform.system()
-    if system == "Linux":
+        send2trash = None
+    if send2trash is not None:
+        try:
+            send2trash(str(path))
+        except Exception as exc:
+            raise RuntimeError(f"Could not move item to system trash: {exc}") from exc
+        located = _locate_in_trash(path.name, original_size)
+        return {"route": "system trash", "destination": str(located) if located else None}
+    if platform.system() == "Linux":
         trash = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
         files, info = trash / "files", trash / "info"
         files.mkdir(parents=True, exist_ok=True); info.mkdir(parents=True, exist_ok=True)
@@ -331,18 +373,22 @@ def trash_path(path: Path):
         shutil.move(str(path), str(dest))
         escaped = original.replace("%", "%25").replace("\n", "%0A")
         (info / f"{dest.name}.trashinfo").write_text(f"[Trash Info]\nPath={escaped}\nDeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n", encoding="utf-8")
-        return "system trash"
-    raise RuntimeError("Install the optional 'send2trash' package to use the system trash on this platform; nothing was deleted.")
+        return {"route": "system trash", "destination": str(dest)}
+    return quarantine_move(path)
 
 
-def write_audit_manifest(items):
+def audit_dir() -> Path:
+    return Path.home() / ".aicleanup" / "audit"
+
+
+def write_audit_manifest(items, prefix="cleanup_audit"):
     if not items:
         return None, None
-    audit_dir = Path.home() / ".aicleanup" / "audit"
-    audit_path = audit_dir / f"cleanup_audit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    directory = audit_dir()
+    audit_path = directory / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     temp_path = audit_path.with_suffix(".json.tmp")
     try:
-        audit_dir.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
         temp_path.write_text(json.dumps({"created": datetime.now(timezone.utc).isoformat(), "items": items}, indent=2), encoding="utf-8")
         os.replace(temp_path, audit_path)
         return str(audit_path), None
@@ -352,6 +398,101 @@ def write_audit_manifest(items):
         except OSError:
             pass
         return None, f"Items were moved, but the audit manifest could not be saved: {exc}"
+
+
+def list_audit_manifests(limit=20):
+    """Summarize the most recent cleanup manifests so the GUI can offer an undo."""
+    directory = audit_dir()
+    if not directory.is_dir():
+        return []
+    summaries = []
+    for path in sorted(directory.glob("cleanup_audit_*.json"), reverse=True)[:limit]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        items = data.get("items") or []
+        if not isinstance(items, list):
+            continue
+        summaries.append({"name": path.name, "created": data.get("created"), "items": len(items),
+                          "restorable": sum(1 for item in items if isinstance(item, dict) and item.get("destination")),
+                          "route": sorted({str(item.get("route")) for item in items if isinstance(item, dict) and item.get("route")})})
+    return summaries
+
+
+def resolve_audit_manifest(value):
+    """Accept a manifest name or path, but only inside AICleanUp's audit folder."""
+    root = audit_dir().resolve(strict=False)
+    candidate = Path(str(value)).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate.name
+    candidate = candidate.resolve(strict=False)
+    if candidate.parent != root or not candidate.name.startswith("cleanup_audit_") or not candidate.name.endswith(".json"):
+        raise RuntimeError("Unknown cleanup manifest; only manifests written by AICleanUp can be restored.")
+    if not candidate.is_file():
+        raise RuntimeError("That cleanup manifest no longer exists.")
+    return candidate
+
+
+def latest_audit_manifest():
+    directory = audit_dir()
+    manifests = sorted(directory.glob("cleanup_audit_*.json"), reverse=True) if directory.is_dir() else []
+    if not manifests:
+        raise RuntimeError("No cleanup manifests found; nothing to restore.")
+    return manifests[0]
+
+
+def restore_manifest(manifest, dry_run=False):
+    """Move previously trashed files back to their original paths."""
+    manifest = resolve_audit_manifest(manifest)
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read that cleanup manifest: {exc}") from exc
+    entries = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        raise RuntimeError("That manifest does not contain restorable items.")
+    restored, skipped, errors = [], [], []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("path"):
+            continue
+        original = Path(str(entry["path"]))
+        destination = entry.get("destination")
+        if entry.get("route") == "ollama rm":
+            skipped.append({"path": str(original), "reason": "Removed by Ollama; re-download the model with `ollama pull`."})
+            continue
+        if not destination:
+            skipped.append({"path": str(original), "reason": "No recorded location; restore it from your operating system Trash or Recycle Bin."})
+            continue
+        destination_path = Path(str(destination))
+        try:
+            if destination_path.is_symlink():
+                raise RuntimeError("The recorded location is a symbolic link; nothing was restored.")
+            info = os.lstat(destination_path)
+            if not stat.S_ISREG(info.st_mode):
+                raise RuntimeError("The recorded location is not a regular file; nothing was restored.")
+            if entry.get("size") is not None and info.st_size != entry["size"]:
+                raise RuntimeError("The trashed file changed size since cleanup; nothing was restored.")
+            if original.is_symlink() or original.exists():
+                raise RuntimeError("A file already exists at the original path; nothing was overwritten.")
+            if not original.parent.is_dir():
+                raise RuntimeError("The original folder no longer exists; recreate it and retry.")
+            if dry_run:
+                restored.append({"path": str(original), "from": str(destination_path), "size": entry.get("size"),
+                                 "category": entry.get("category"), "dry_run": True})
+                continue
+            shutil.move(str(destination_path), str(original))
+            if destination_path.parent.name == "files" and destination_path.parent.parent.name == "Trash":
+                # Clear the freedesktop .trashinfo entry so the restored file leaves no orphan.
+                try:
+                    (destination_path.parent.parent / "info" / f"{destination_path.name}.trashinfo").unlink()
+                except OSError:
+                    pass
+            restored.append({"path": str(original), "from": str(destination_path), "size": entry.get("size"),
+                             "category": entry.get("category"), "route": "restored"})
+        except (OSError, RuntimeError) as exc:
+            errors.append({"path": str(original), "error": str(exc)})
+    return {"manifest": str(manifest), "restored": restored, "skipped": skipped, "errors": errors}
 
 
 class State:
@@ -371,6 +512,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json({"targets": targets})
         if parsed.path == "/api/state":
             return self.send_json({"items": list(state.findings.values()), "warnings": []})
+        if parsed.path == "/api/audits":
+            return self.send_json({"audits": list_audit_manifests()})
         return super().do_GET()
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -405,6 +548,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             state.findings = {item["id"]: item for item in items}
             state.roots = roots
             return self.send_json({"items": items, "warnings": warnings, "scanned": len(roots)})
+        if parsed.path == "/api/restore":
+            requested = payload.get("audit")
+            if requested is not None and not isinstance(requested, str):
+                return self.send_json({"error": "Invalid cleanup manifest."}, 400)
+            try:
+                manifest = resolve_audit_manifest(requested) if requested else latest_audit_manifest()
+                result = restore_manifest(manifest)
+            except RuntimeError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            log_path, log_error = write_audit_manifest(result["restored"], prefix="restore_log")
+            if log_error:
+                result["errors"].append({"path": "restore log", "error": log_error})
+            result["restore_log"] = log_path
+            return self.send_json(result)
         if parsed.path == "/api/duplicates":
             return self.send_json({"groups": exact_model_duplicates(list(state.findings.values()))})
         if parsed.path == "/api/ollama-remove":
@@ -461,8 +618,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         raise RuntimeError("File changed within the last 7 days; rescan after it becomes stale.")
                     if item.get("category") == "Ollama partial downloads" and not is_ollama_partial(candidate):
                         raise RuntimeError("The Ollama partial marker changed; rescan before cleanup.")
-                    route = trash_path(candidate)
-                    audit.append({"path": str(candidate), "size": item["size"], "category": item["category"], "route": route})
+                    result = trash_path(candidate)
+                    if isinstance(result, str):
+                        result = {"route": result, "destination": None}
+                    audit.append({"path": str(candidate), "size": item["size"], "category": item["category"],
+                                  "route": result.get("route"), "destination": result.get("destination"),
+                                  "modified": datetime.fromtimestamp(metadata.st_mtime).astimezone().isoformat(timespec="minutes")})
                     state.findings.pop(item_id, None)
                 except Exception as exc:
                     errors.append({"path": item["path"], "error": str(exc)})
@@ -477,10 +638,30 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print a scan summary without modifying files (default behavior).")
     parser.add_argument("--workspace", help="Also inspect a project folder for old scratch and patch files.")
     parser.add_argument("--include-models", action="store_true", help="Include model weights (not selected for cleanup by default).")
+    parser.add_argument("--restore", nargs="?", const="latest", metavar="MANIFEST",
+                        help="Restore files listed in a cleanup manifest (newest by default). Preview only unless --confirm is given.")
+    parser.add_argument("--confirm", action="store_true", help="Apply the --restore preview. Restores always need this flag.")
     parser.add_argument("--gui", action="store_true", help="Launch the local browser interface.")
     parser.add_argument("--port", type=int, default=8765, help="GUI port (default: 8765).")
     parser.add_argument("--host", default="127.0.0.1", help="GUI bind address (default: 127.0.0.1; use 0.0.0.0 only behind a trusted proxy).")
     args = parser.parse_args()
+    if args.restore:
+        try:
+            manifest = latest_audit_manifest() if args.restore in {"latest", ""} else resolve_audit_manifest(args.restore)
+            result = restore_manifest(manifest, dry_run=not args.confirm)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        label = "Would restore" if not args.confirm else "Restored"
+        print(f"{label} {len(result['restored'])} item(s) from {result['manifest']}")
+        for item in result["restored"]:
+            print(f"  {human_size(item['size'] or 0):>10}  {item['path']}")
+        for item in result["skipped"]:
+            print(f"  skipped  {item['path']}: {item['reason']}")
+        for error in result["errors"]:
+            print(f"  blocked  {error['path']}: {error['error']}")
+        if not args.confirm:
+            print("Preview only. Re-run with --confirm to restore these files.")
+        return
     if args.gui:
         server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
         print(f"AICleanUp is ready at http://127.0.0.1:{args.port} (bound to {args.host})")

@@ -51,14 +51,27 @@ AICleanUp does not permanently delete files. Selected files are moved to the ope
 python3 -m pip install -r requirements.txt
 ```
 
-If the native trash operation is unavailable, the app reports an error and leaves the files in place. Review the selected paths before confirming cleanup. Avoid running as root/Administrator.
+If no native trash route is available, the file is moved into an app-managed quarantine folder (`~/.aicleanup/quarantine/<timestamp>_<id>/`) instead of being deleted or refused. Every manifest entry records the original path, size, route, and the location the file was moved to, so cleanup stays reversible.
+
+## Restore a cleanup
+
+**Undo last cleanup** in the toolbar (or the CLI below) moves files back to their original folders from the newest manifest. Restores are previewed first, never overwrite an existing file, refuse when the recorded file changed size, and write a `restore_log_*.json` manifest:
+
+```bash
+python3 aicleanup.py --restore                      # preview the newest cleanup
+python3 aicleanup.py --restore --confirm            # apply it
+python3 aicleanup.py --restore cleanup_audit_20260101_120000_000000.json --confirm
+```
+
+Entries without a recorded location (for example files the OS Recycle Bin does not expose) are reported so you can restore them through the system Trash, and model tags removed with `ollama rm` are re-downloaded with `ollama pull` rather than restored.
 
 ## CLI dry run
 
-The command-line interface only reports candidate totals and never modifies files:
+The command-line interface reports candidate totals and never modifies files; restores need an explicit `--confirm`:
 
 ```bash
 python3 aicleanup.py --dry-run
 python3 aicleanup.py --workspace ~/src/my-project
 python3 aicleanup.py --include-models
+python3 aicleanup.py --restore            # preview the newest cleanup
 ```
