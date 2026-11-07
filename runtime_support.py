@@ -349,3 +349,52 @@ def huggingface_prune_preview(timeout=45):
         raise RuntimeError((error or output or "The Hugging Face CLI returned an error.")[:800])
     return {"command": " ".join(command), "output": output or "No unused revisions reported.",
             "warnings": error, "dry_run": True}
+
+RUNTIME_MANAGEMENT = {
+    "ollama": "Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.",
+    "lmstudio": "Remove models in LM Studio → My Models.",
+    "huggingface": "Use `hf cache rm` or review `hf cache prune --dry-run`.",
+    "gpt4all": "Manage models inside the GPT4All app.",
+    "llama.cpp": "Keep only the .gguf you use; llama.cpp has no model registry.",
+    "text-generation-webui": "Remove models from the text-generation-webui Models tab.",
+    "localai": "Remove models from LocalAI's models folder or gallery.",
+    "jan": "Remove models in Jan → Hub / My Models.",
+}
+RUNTIME_CLI_NAMES = {"ollama": ("ollama",), "huggingface": ("hf", "huggingface-cli")}
+
+
+def runtime_cli(runtime):
+    """Name of the management CLI on PATH for a runtime, or None."""
+    for name in RUNTIME_CLI_NAMES.get(runtime, ()):
+        if shutil.which(name):
+            return name
+    return None
+
+
+def runtime_inventory(items):
+    """Summarize model stores per runtime: size, count, paths, and how to manage them."""
+    summary = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        runtime = item.get("runtime")
+        is_model = item.get("model") or item.get("category") == "Model weights" or item.get("cleanup_action") == "ollama-rm"
+        if not runtime or not is_model:
+            continue
+        entry = summary.setdefault(runtime, {"runtime": runtime, "models": 0, "bytes": 0, "stores": set()})
+        entry["models"] += 1
+        entry["bytes"] += int(item.get("logical_size") or item.get("size") or 0)
+        if item.get("root"):
+            entry["stores"].add(str(item["root"]))
+    inventory = []
+    for runtime, entry in summary.items():
+        cli = runtime_cli(runtime)
+        inventory.append({
+            "runtime": runtime,
+            "models": entry["models"],
+            "bytes": entry["bytes"],
+            "stores": sorted(entry["stores"]),
+            "cli": cli,
+            "management": RUNTIME_MANAGEMENT.get(runtime, "Manage models with the app that owns them."),
+        })
+    return sorted(inventory, key=lambda item: item["bytes"], reverse=True)

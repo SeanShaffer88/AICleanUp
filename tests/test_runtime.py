@@ -66,6 +66,29 @@ class OllamaCommandTests(unittest.TestCase):
             detected = runtime_support.running_ai_processes()
         self.assertEqual([process["runtime"] for process in detected], ["chatgpt"])
 
+    def test_runtime_inventory_groups_stores_and_reports_cli_availability(self):
+        items = [
+            {"runtime": "ollama", "model": True, "size": 800, "logical_size": 4096, "root": "/m/ollama"},
+            {"runtime": "ollama", "model": True, "size": 200, "logical_size": 1024, "root": "/m/system"},
+            {"runtime": "lmstudio", "category": "Model weights", "size": 500, "root": "/m/lmstudio"},
+            {"runtime": "huggingface", "model": True, "size": 100, "root": "/m/hf"},
+            {"runtime": "ollama", "category": "Caches", "size": 99999, "root": "/m/ollama"},
+            {"category": "Caches", "size": 4242, "root": "/m/chatgpt"},
+        ]
+        with patch.object(runtime_support.shutil, "which",
+                          side_effect=lambda name: "/usr/bin/ollama" if name == "ollama" else None):
+            inventory = runtime_support.runtime_inventory(items)
+        by_runtime = {entry["runtime"]: entry for entry in inventory}
+        self.assertEqual([entry["runtime"] for entry in inventory], ["ollama", "lmstudio", "huggingface"])
+        self.assertEqual(by_runtime["ollama"]["models"], 2)
+        self.assertEqual(by_runtime["ollama"]["bytes"], 5120)
+        self.assertEqual(by_runtime["ollama"]["stores"], ["/m/ollama", "/m/system"])
+        self.assertEqual(by_runtime["ollama"]["cli"], "ollama")
+        self.assertIsNone(by_runtime["lmstudio"]["cli"])
+        self.assertIn("My Models", by_runtime["lmstudio"]["management"])
+        self.assertIn("hf cache rm", by_runtime["huggingface"]["management"])
+        self.assertNotIn("chatgpt", by_runtime)
+
     def test_hf_preview_is_dry_run_only_and_never_uses_a_shell(self):
         with patch.object(runtime_support.shutil, "which",
                           side_effect=lambda name: "/opt/bin/hf" if name == "hf" else None), \

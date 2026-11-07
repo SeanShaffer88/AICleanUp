@@ -109,3 +109,16 @@ table tbody tr[hidden]{display:none}
 .dup-member .file-name{font-size:10.5px;color:#d3d8dd}
 .dup-member .file-path{font-size:8.5px}
 .dup-show{white-space:nowrap}
+
+/* ---------------------------------------------------------------- runtime inventory */
+.runtime-row{padding:8px 9px;border:1px solid #303439;border-radius:4px;background:#202329;margin-bottom:6px;cursor:pointer}
+.runtime-row:last-child{margin-bottom:0}
+.runtime-row:hover{border-color:#414852;background:#24282f}
+.runtime-row.active{border-color:#3d6890;background:#22303d}
+.runtime-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.runtime-name{color:#dfe4e9;font-size:11px;font-weight:600;text-transform:capitalize}
+.runtime-size{margin-left:auto;font:9.5px var(--mono);color:#b9c0c7}
+.runtime-badge{font:8.5px var(--mono);letter-spacing:.2px;color:#8b939c;border:1px solid #3c424a;border-radius:8px;padding:1px 5px}
+.runtime-badge.ok{color:#7fd3a7;border-color:#2f5d47;background:#1d2f27}
+.runtime-meta{font:9px var(--mono);color:#767d86;margin-top:3px}
+.runtime-note{margin-top:5px;color:#9aa2aa;font-size:9.5px;line-height:1.5}
