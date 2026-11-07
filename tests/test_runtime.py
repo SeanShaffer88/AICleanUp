@@ -129,3 +129,40 @@ class OllamaCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateScanProgressTests(unittest.TestCase):
+    def make_pair(self, temp):
+        base = Path(temp)
+        first, second = base / "one.gguf", base / "two.gguf"
+        first.write_bytes(b"identical weights" * 64)
+        second.write_bytes(b"identical weights" * 64)
+        return [{"id": name, "path": str(base / name), "model": True, "cleanup_action": "none"}
+                for name in ("one.gguf", "two.gguf")]
+
+    def test_progress_reports_total_bytes_and_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            items = self.make_pair(temp)
+            calls = []
+            groups = runtime_support.exact_model_duplicates(items, progress=lambda *args: calls.append(args))
+            self.assertEqual(len(groups), 1)
+            self.assertEqual(calls[0], (0, 2, 0, len(b"identical weights" * 64) * 2))
+            self.assertEqual(calls[-1], (2, 2, len(b"identical weights" * 64) * 2, len(b"identical weights" * 64) * 2))
+
+    def test_cancellation_stops_before_hashing_and_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            items = self.make_pair(temp)
+            with self.assertRaises(runtime_support.ScanCancelled) as error:
+                runtime_support.exact_model_duplicates(items, should_cancel=lambda: True)
+            self.assertIn("nothing was changed", str(error.exception))
+            # Files are untouched by a cancelled read-only pass.
+            self.assertTrue(all(Path(item["path"]).is_file() for item in items))
+
+    def test_unique_files_are_not_hashed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            (base / "only.gguf").write_bytes(b"unique")
+            items = [{"id": "only", "path": str(base / "only.gguf"), "model": True, "cleanup_action": "none"}]
+            calls = []
+            self.assertEqual(runtime_support.exact_model_duplicates(items, progress=lambda *args: calls.append(args)), [])
+            self.assertEqual(calls, [(0, 0, 0, 0)])

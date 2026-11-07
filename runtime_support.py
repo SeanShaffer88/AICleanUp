@@ -243,8 +243,18 @@ def ollama_model_items(root: Path):
     return items
 
 
-def exact_model_duplicates(items):
-    """Find byte-identical standalone model files by SHA-256; never infer duplicates by name."""
+class ScanCancelled(Exception):
+    """Raised when the user cancels a long-running read-only scan."""
+
+
+def exact_model_duplicates(items, progress=None, should_cancel=None):
+    """Find byte-identical standalone model files by SHA-256; never infer duplicates by name.
+
+    Hashing large weight files can take minutes, so the caller may pass a
+    ``progress(done, total, bytes_done, bytes_total)`` callback and a
+    ``should_cancel()`` probe. Cancelling raises :class:`ScanCancelled` before the
+    next file is read; nothing is modified either way.
+    """
     by_size = {}
     for item in items:
         if not item.get("model") or item.get("cleanup_action") != "none":
@@ -258,11 +268,17 @@ def exact_model_duplicates(items):
         except (OSError, KeyError):
             continue
     groups = []
-    for size, candidates in by_size.items():
-        if len(candidates) < 2:
-            continue
+    candidates_by_size = [(size, candidates) for size, candidates in by_size.items() if len(candidates) >= 2]
+    total_files = sum(len(candidates) for _, candidates in candidates_by_size)
+    total_bytes = sum(size * len(candidates) for size, candidates in candidates_by_size)
+    hashed_files = hashed_bytes = 0
+    if progress:
+        progress(hashed_files, total_files, hashed_bytes, total_bytes)
+    for size, candidates in candidates_by_size:
         by_hash = {}
         for item, device, inode, mtime_ns in candidates:
+            if should_cancel and should_cancel():
+                raise ScanCancelled("Duplicate check cancelled; nothing was changed.")
             path = Path(item["path"])
             digest = hashlib.sha256()
             try:
@@ -275,6 +291,10 @@ def exact_model_duplicates(items):
                 by_hash.setdefault(digest.hexdigest(), []).append((item, device, inode))
             except OSError:
                 continue
+            hashed_files += 1
+            hashed_bytes += size
+            if progress:
+                progress(hashed_files, total_files, hashed_bytes, total_bytes)
         for sha256, matches in by_hash.items():
             unique_files = {}
             for item, device, inode in matches:

@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import stat
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from runtime_support import (
-    exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
+    ScanCancelled, exact_model_duplicates, extend_runtime_targets, huggingface_prune_preview, is_model_weight_path, is_ollama_partial, ollama_model_items,
     runtime_inventory,
     open_file_index, process_block_reason, remove_ollama_model, running_ai_processes, runtime_for_source,
 )
@@ -590,6 +591,69 @@ class State:
     def __init__(self): self.findings = {}; self.roots = []
 state = State()
 
+
+class DuplicateProgress:
+    """Live counters for the read-only duplicate hash pass, readable while it runs.
+
+    Hashing tens of gigabytes takes minutes, so the GUI polls this instead of
+    staring at a frozen request. Nothing here touches files.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.cancelled = False
+        self.total = self.done = self.bytes_total = self.bytes_done = 0
+        self.started = self.finished = None
+        self.groups = None
+        self.error = None
+        self.cancel_event = threading.Event()
+
+    def begin(self):
+        with self.lock:
+            self.cancel_event.clear()
+            self.running, self.cancelled = True, False
+            self.total = self.done = self.bytes_total = self.bytes_done = 0
+            self.started = datetime.now(timezone.utc).isoformat()
+            self.finished, self.groups, self.error = None, None, None
+
+    def update(self, done, total, bytes_done, bytes_total):
+        with self.lock:
+            self.done, self.total = done, total
+            self.bytes_done, self.bytes_total = bytes_done, bytes_total
+
+    def finish(self, groups, cancelled=False):
+        with self.lock:
+            self.running, self.cancelled = False, cancelled
+            self.groups = groups
+            self.finished = datetime.now(timezone.utc).isoformat()
+
+    def fail(self, message):
+        with self.lock:
+            self.running = False
+            self.error = message
+            self.finished = datetime.now(timezone.utc).isoformat()
+
+    def should_cancel(self):
+        return self.cancel_event.is_set()
+
+    def request_cancel(self):
+        with self.lock:
+            if not self.running:
+                return False
+            self.cancel_event.set()
+            return True
+
+    def snapshot(self):
+        with self.lock:
+            return {"running": self.running, "cancelled": self.cancelled, "done": self.done, "total": self.total,
+                    "bytes_done": self.bytes_done, "bytes_total": self.bytes_total,
+                    "groups": len(self.groups) if self.groups is not None else None,
+                    "started": self.started, "finished": self.finished, "error": self.error}
+
+
+duplicate_progress = DuplicateProgress()
+
 MAX_IGNORE_RULES = 200
 MAX_IGNORE_RULE_LENGTH = 300
 
@@ -689,6 +753,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json({"targets": targets})
         if parsed.path == "/api/state":
             return self.send_json({"items": list(state.findings.values()), "warnings": []})
+        if parsed.path == "/api/duplicates/progress":
+            return self.send_json(duplicate_progress.snapshot())
         if parsed.path == "/api/runtimes":
             return self.send_json({"runtimes": runtime_inventory(list(state.findings.values()))})
         if parsed.path == "/api/audits":
@@ -817,8 +883,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if audit_error: errors.append({"path": "audit manifest", "error": audit_error})
             remaining, _ = empty_directories(scanned_roots())
             return self.send_json({"moved": moved, "errors": errors, "audit": audit_path, "remaining": len(remaining)})
+        if parsed.path == "/api/duplicates/cancel":
+            cancelling = duplicate_progress.request_cancel()
+            return self.send_json({"cancelling": cancelling, "progress": duplicate_progress.snapshot()})
         if parsed.path == "/api/duplicates":
-            return self.send_json({"groups": exact_model_duplicates(list(state.findings.values()))})
+            if duplicate_progress.snapshot()["running"]:
+                return self.send_json({"error": "A duplicate check is already running; cancel it before starting another."}, 409)
+            duplicate_progress.begin()
+            try:
+                groups = exact_model_duplicates(list(state.findings.values()),
+                                                 progress=duplicate_progress.update,
+                                                 should_cancel=duplicate_progress.should_cancel)
+            except ScanCancelled:
+                duplicate_progress.finish(None, cancelled=True)
+                return self.send_json({"groups": [], "cancelled": True, "progress": duplicate_progress.snapshot()})
+            except Exception as exc:
+                duplicate_progress.fail(str(exc))
+                return self.send_json({"error": str(exc)}, 500)
+            duplicate_progress.finish(groups)
+            return self.send_json({"groups": groups, "cancelled": False, "progress": duplicate_progress.snapshot()})
         if parsed.path == "/api/ollama-remove":
             ids = payload.get("ids", [])
             if not isinstance(ids, list) or any(not isinstance(item_id, str) for item_id in ids):

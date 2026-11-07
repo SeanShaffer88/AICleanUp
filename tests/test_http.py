@@ -598,5 +598,78 @@ class HandlerRequestTests(unittest.TestCase):
             self.assertTrue(empty.is_dir())
 
 
+    def test_duplicate_progress_is_idle_before_any_check(self):
+        aicleanup.duplicate_progress.begin()
+        aicleanup.duplicate_progress.finish(None, cancelled=True)
+        with urllib.request.urlopen(self.url + "/api/duplicates/progress", timeout=5) as response:
+            data = json.load(response)
+        self.assertFalse(data["running"])
+        self.assertEqual((data["done"], data["total"]), (0, 0))
+        with self.post_json("/api/duplicates/cancel", {}) as response:
+            cancel = json.load(response)
+        self.assertFalse(cancel["cancelling"])
+
+    def slow_duplicates(self, steps=20, delay=0.02):
+        def fake(items, progress=None, should_cancel=None):
+            total_bytes = 100
+            progress(0, steps, 0, total_bytes)
+            for step in range(steps):
+                if should_cancel and should_cancel():
+                    raise aicleanup.ScanCancelled("Duplicate check cancelled; nothing was changed.")
+                time.sleep(delay)
+                progress(step + 1, steps, (step + 1) * (total_bytes // steps), total_bytes)
+            return []
+        return fake
+
+    def run_in_thread(self, path, payload, sink):
+        def worker():
+            try:
+                with self.post_json(path, payload) as response:
+                    sink["status"] = response.status
+                    sink["body"] = json.load(response)
+            except urllib.error.HTTPError as error:
+                sink["status"] = error.code
+                sink["body"] = json.loads(error.read().decode())
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
+
+    def test_duplicate_progress_is_visible_while_hashing_and_blocks_restarts(self):
+        self.addCleanup(lambda: aicleanup.duplicate_progress.finish(None, cancelled=True))
+        sink = {}
+        with patch.object(aicleanup, "exact_model_duplicates", side_effect=self.slow_duplicates()):
+            thread = self.run_in_thread("/api/duplicates", {}, sink)
+            time.sleep(0.25)
+            with urllib.request.urlopen(self.url + "/api/duplicates/progress", timeout=5) as response:
+                live = json.load(response)
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.post_json("/api/duplicates", {})
+            thread.join(timeout=10)
+        self.assertTrue(live["running"])
+        self.assertGreater(live["done"], 0)
+        self.assertEqual(live["total"], 20)
+        self.assertGreater(live["bytes_done"], 0)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(sink["status"], 200)
+        self.assertFalse(sink["body"]["cancelled"])
+        self.assertEqual(sink["body"]["progress"]["done"], 20)
+
+    def test_duplicate_check_can_be_cancelled_mid_hash(self):
+        self.addCleanup(lambda: aicleanup.duplicate_progress.finish(None, cancelled=True))
+        sink = {}
+        with patch.object(aicleanup, "exact_model_duplicates", side_effect=self.slow_duplicates(steps=300, delay=0.01)):
+            thread = self.run_in_thread("/api/duplicates", {}, sink)
+            time.sleep(0.2)
+            with self.post_json("/api/duplicates/cancel", {}) as response:
+                cancel = json.load(response)
+            thread.join(timeout=10)
+        self.assertTrue(cancel["cancelling"])
+        self.assertEqual(sink["status"], 200)
+        self.assertTrue(sink["body"]["cancelled"])
+        self.assertEqual(sink["body"]["groups"], [])
+        self.assertTrue(sink["body"]["progress"]["cancelled"])
+        self.assertFalse(sink["body"]["progress"]["running"])
+
+
 if __name__ == "__main__":
     unittest.main()
