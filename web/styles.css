@@ -148,3 +148,5 @@ table tbody tr[hidden]{display:none}
 .empty-path{color:#cdd3da;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
 .empty-list small{color:#767d86;white-space:nowrap;font:9px var(--mono)}
 .empty-list .empty-more{color:#8b929b;font-style:italic;justify-content:flex-start}
+.duplicate-btn.running{border-color:#8a5a2c;background:#3a2b1d;color:#ecc38a}
+.duplicate-btn.running:hover{background:#47341f}

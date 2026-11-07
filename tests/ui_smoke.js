@@ -39,6 +39,8 @@ const fixtures = [
 ];
 
 const calls = [];
+let duplicateDelay = 10;
+let duplicateCancelled = false;
 const dom = new JSDOM(html, { url: 'http://127.0.0.1:8765/', runScripts: 'outside-only', pretendToBeVisual: true });
 const { window } = dom;
 window.fetch = async (url, options = {}) => {
@@ -46,7 +48,12 @@ window.fetch = async (url, options = {}) => {
   const reply = (value) => ({ ok: true, status: 200, json: async () => value });
   if (url === '/api/scan') return reply({ items: JSON.parse(JSON.stringify(fixtures)), warnings: [], scanned: 2 });
   if (url === '/api/audits') return reply({ audits: [{ name: 'cleanup_audit_x.json', created: new Date().toISOString(), items: 3, restorable: 2 }] });
-  if (url === '/api/duplicates') return reply({ groups: [duplicateGroup] });
+  if (url === '/api/duplicates') {
+    await new Promise((resolve) => setTimeout(resolve, duplicateDelay));
+    return reply(duplicateCancelled ? { groups: [], cancelled: true } : { groups: [duplicateGroup], cancelled: false });
+  }
+  if (url === '/api/duplicates/progress') return reply({ running: true, done: 2, total: 4, bytes_done: 2048, bytes_total: 8192, cancelled: false });
+  if (url === '/api/duplicates/cancel') return reply({ cancelling: true, progress: { running: true } });
   if (url === '/api/runtimes') return reply({ runtimes: [
     { runtime: 'huggingface', models: 1, bytes: 4096, stores: ['/home/u/.cache/hf/hub'], cli: 'hf', management: 'Use `hf cache rm` or review `hf cache prune --dry-run`.' },
     { runtime: 'ollama', models: 1, bytes: 1024, stores: ['/home/u/.ollama/models'], cli: null, management: 'Remove tags with `ollama rm <model:tag>`; shared blobs stay intact.' },
@@ -202,6 +209,33 @@ setTimeout(async () => {
   click($('#viewDuplicates'));
   check('duplicate view can be reopened', $$('#fileRows .dup-group').length === 1);
   click($('#viewFiles'));
+
+  // duplicate hashing progress and cancel
+  duplicateDelay = 400;
+  const dupStart = calls.length;
+  click($('#duplicatesBtn'));
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  check('hashing swaps the button for a cancel', $('#duplicatesBtn span').textContent === 'Cancel hashing', $('#duplicatesBtn').textContent.trim());
+  check('hashing keeps the cancel clickable', $('#duplicatesBtn').disabled === false);
+  check('hashing polls the progress endpoint', calls.slice(dupStart).some((call) => call.url === '/api/duplicates/progress'));
+  check('hashing reports file and byte counts', $('#statusText').textContent.includes('Hashing 2 of 4 files'), $('#statusText').textContent);
+  check('hashing fills the progress bar', $('#progress div').style.width === '50%', $('#progress div').style.width);
+  check('hashing marks the button as running', $('#duplicatesBtn').classList.contains('running'));
+  click($('#duplicatesBtn'));
+  check('cancel posts to the cancel endpoint', calls.slice(dupStart).some((call) => call.url === '/api/duplicates/cancel'));
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  check('hashing restores the button label', $('#duplicatesBtn span').textContent === 'Find duplicates', $('#duplicatesBtn').textContent.trim());
+  check('hashing clears the progress bar', $('#progress div').style.width === '', $('#progress div').style.width);
+  duplicateDelay = 10;
+
+  // a cancelled check reports nothing changed and leaves the file view
+  duplicateCancelled = true;
+  click($('#duplicatesBtn'));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  check('cancelled check reports nothing changed', $('#statusText').textContent.includes('cancelled'), $('#statusText').textContent);
+  check('cancelled check leaves no duplicate groups', $('#dupCount').textContent === '0', $('#dupCount').textContent);
+  check('cancelled check returns to the file view', $('#filesHead').hidden === false, $('#filesHead').hidden);
+  duplicateCancelled = false;
 
   // bulk selection
   click($('#clearFilters'));

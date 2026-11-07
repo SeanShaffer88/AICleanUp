@@ -8,7 +8,7 @@ const state = {
   audits: [], overrideRecent: false,
   selectedId: null, duplicateGroups: null, view: 'files', runtimes: [],
   zoom: 1, panX: 0, panY: 0,
-  expanded: new Set(), scopes: [], emptyDirs: [],
+  expanded: new Set(), scopes: [], emptyDirs: [], hashing: false,
 };
 
 const colors = { 'Caches':'#3c78a9', 'Ollama partial downloads':'#3c78a9', 'Ollama models':'#795493', 'Application data':'#527fad', 'Developer tools':'#47845f', 'Superseded outputs':'#a6783e', 'Model weights':'#795493', 'Project files':'#62758a' };
@@ -1096,7 +1096,7 @@ function setBusy(on, text) {
   state.busy = on;
   $('#scanBtn').disabled = on;
   $('#refreshBtn').disabled = on;
-  $('#duplicatesBtn').disabled = on || !state.items.some(x=>x.model && x.cleanup_action==='none');
+  $('#duplicatesBtn').disabled = !state.hashing && (on || !state.items.some(x=>x.model && x.cleanup_action==='none'));
   $('#hfPreviewBtn').disabled = on || !state.items.some(x=>x.runtime==='huggingface');
   $('#restoreBtn').disabled = on || !state.audits.some(a=>a.restorable>0);
   $('#viewDuplicates').disabled = on || !duplicateGroups().length;
@@ -1136,14 +1136,48 @@ async function runScan() {
   }
 }
 
+async function pollDuplicateProgress() {
+  try {
+    const response = await fetch('/api/duplicates/progress');
+    if (!response.ok || !state.hashing) return;
+    const progress = await response.json();
+    if (!progress.running || !state.hashing) return;
+    const pct = progress.total ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+    $('#statusText').textContent = `Hashing ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()} files · ${pct}% · ${bytes(progress.bytes_done)} of ${bytes(progress.bytes_total)}`;
+    const bar = $('#progress');
+    bar.classList.add('running');
+    bar.firstElementChild.style.width = `${pct}%`;
+  } catch { /* progress is best-effort; the request itself still reports the result */ }
+}
+
+async function cancelDuplicateScan() {
+  if (!state.hashing) return;
+  $('#statusText').textContent = 'Cancelling the duplicate check…';
+  try {
+    await fetch('/api/duplicates/cancel', { method:'POST', headers:{'Content-Type':'application/json'}, body: '{}' });
+  } catch { /* the running request reports the outcome */ }
+}
+
 async function findDuplicates() {
   if (state.busy) return;
+  state.hashing = true;
   setBusy(true, 'Hashing model files…');
+  $('#duplicatesBtn').classList.add('running');
+  $('#duplicatesBtn span').textContent = 'Cancel hashing';
+  const poll = setInterval(pollDuplicateProgress, 250);
   try {
     const response = await fetch('/api/duplicates', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Duplicate scan failed');
     const groups = data.groups || [];
+    if (data.cancelled) {
+      state.duplicateGroups = [];
+      state.view = 'files';
+      $('#statusText').textContent = 'Duplicate check cancelled · nothing was changed';
+      toast('Duplicate check cancelled — nothing was changed');
+      render();
+      return;
+    }
     state.duplicateGroups = groups;
     if (!groups.length) {
       $('#warningLine').textContent = 'No byte-identical model files found. Similar names are never treated as duplicates.';
@@ -1163,6 +1197,11 @@ async function findDuplicates() {
     toast(err.message);
     $('#statusText').textContent = 'Duplicate check failed';
   } finally {
+    clearInterval(poll);
+    state.hashing = false;
+    $('#duplicatesBtn').classList.remove('running');
+    $('#duplicatesBtn span').textContent = 'Find duplicates';
+    $('#progress').firstElementChild.style.width = '';
     setBusy(false, $('#statusText').textContent);
   }
 }
@@ -1299,7 +1338,7 @@ function toast(text) {
 $('#scanBtn').addEventListener('click', runScan);
 $('#refreshBtn').addEventListener('click', runScan);
 $('#cleanBtn').addEventListener('click', moveToTrash);
-$('#duplicatesBtn').addEventListener('click', findDuplicates);
+$('#duplicatesBtn').addEventListener('click', () => (state.hashing ? cancelDuplicateScan() : findDuplicates()));
 $('#viewFiles').addEventListener('click', () => { state.view = 'files'; render(); });
 $('#viewDuplicates').addEventListener('click', () => { state.view = 'duplicates'; render(); });
 $('#hfPreviewBtn').addEventListener('click', previewHuggingFacePrune);
